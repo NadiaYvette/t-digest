@@ -1,0 +1,9 @@
+[book]
+title = "T-Digest: Online Quantile Estimation"
+authors = ["Nadia Yvette Chambers"]
+language = "en"
+multilingual = true
+src = "en"
+
+[build]
+build-dir = "book"

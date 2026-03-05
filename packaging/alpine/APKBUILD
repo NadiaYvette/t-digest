@@ -1,0 +1,114 @@
+# Maintainer: Nadia Yvette Chambers <nadia.yvette.chambers@gmail.com>
+pkgname=t-digest
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Dunning t-digest implementations in multiple languages"
+url="https://github.com/NadiaYvette/t-digest"
+arch="noarch"
+license="MIT"
+subpackages="
+  $pkgname-doc
+  $pkgname-ruby
+  $pkgname-haskell
+  $pkgname-common-lisp:common_lisp
+  $pkgname-scheme
+  $pkgname-sml
+  $pkgname-ada
+  $pkgname-prolog
+  $pkgname-mercury
+"
+source="$pkgname-$pkgver.tar.gz"
+
+build() {
+  # Pure source distribution; no compilation needed
+  return 0
+}
+
+check() {
+  return 0
+}
+
+package() {
+  mkdir -p "$pkgdir"/usr/share/doc/$pkgname
+  if [ -f LICENSE ]; then
+    install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+  fi
+}
+
+doc() {
+  pkgdesc="$pkgdesc (documentation)"
+  install -dm755 "$subpkgdir"/usr/share/doc/$pkgname
+}
+
+ruby() {
+  pkgdesc="Ruby implementation of the Dunning t-digest algorithm"
+  depends="ruby"
+  install -Dm644 "$builddir"/ruby/tdigest.rb \
+    "$subpkgdir"/usr/share/$pkgname/ruby/tdigest.rb
+}
+
+haskell() {
+  pkgdesc="Haskell implementation of the Dunning t-digest algorithm"
+  depends="ghc"
+  install -Dm644 "$builddir"/haskell/TDigest.hs \
+    "$subpkgdir"/usr/share/$pkgname/haskell/TDigest.hs
+  install -Dm644 "$builddir"/haskell/Main.hs \
+    "$subpkgdir"/usr/share/$pkgname/haskell/Main.hs
+}
+
+common_lisp() {
+  pkgdesc="Common Lisp implementation of the Dunning t-digest algorithm"
+  depends="sbcl"
+  install -Dm644 "$builddir"/common-lisp/tdigest.lisp \
+    "$subpkgdir"/usr/share/$pkgname/common-lisp/tdigest.lisp
+  install -Dm644 "$builddir"/common-lisp/demo.lisp \
+    "$subpkgdir"/usr/share/$pkgname/common-lisp/demo.lisp
+}
+
+scheme() {
+  pkgdesc="Scheme implementation of the Dunning t-digest algorithm"
+  install -Dm644 "$builddir"/scheme/tdigest.scm \
+    "$subpkgdir"/usr/share/$pkgname/scheme/tdigest.scm
+  install -Dm644 "$builddir"/scheme/demo.scm \
+    "$subpkgdir"/usr/share/$pkgname/scheme/demo.scm
+}
+
+sml() {
+  pkgdesc="Standard ML implementation of the Dunning t-digest algorithm"
+  depends="mlton"
+  install -Dm644 "$builddir"/sml/tdigest.sml \
+    "$subpkgdir"/usr/share/$pkgname/sml/tdigest.sml
+  install -Dm644 "$builddir"/sml/demo.sml \
+    "$subpkgdir"/usr/share/$pkgname/sml/demo.sml
+  install -Dm644 "$builddir"/sml/demo.mlb \
+    "$subpkgdir"/usr/share/$pkgname/sml/demo.mlb
+}
+
+ada() {
+  pkgdesc="Ada implementation of the Dunning t-digest algorithm"
+  depends="gcc-gnat"
+  install -Dm644 "$builddir"/ada/tdigest.ads \
+    "$subpkgdir"/usr/share/$pkgname/ada/tdigest.ads
+  install -Dm644 "$builddir"/ada/tdigest.adb \
+    "$subpkgdir"/usr/share/$pkgname/ada/tdigest.adb
+  install -Dm644 "$builddir"/ada/demo.adb \
+    "$subpkgdir"/usr/share/$pkgname/ada/demo.adb
+}
+
+prolog() {
+  pkgdesc="Prolog implementation of the Dunning t-digest algorithm"
+  depends="swi-prolog"
+  install -Dm644 "$builddir"/prolog/tdigest.pl \
+    "$subpkgdir"/usr/share/$pkgname/prolog/tdigest.pl
+  install -Dm644 "$builddir"/prolog/demo.pl \
+    "$subpkgdir"/usr/share/$pkgname/prolog/demo.pl
+}
+
+mercury() {
+  pkgdesc="Mercury implementation of the Dunning t-digest algorithm"
+  depends="mercury"
+  install -Dm644 "$builddir"/mercury/tdigest.m \
+    "$subpkgdir"/usr/share/$pkgname/mercury/tdigest.m
+  install -Dm644 "$builddir"/mercury/demo.m \
+    "$subpkgdir"/usr/share/$pkgname/mercury/demo.m
+}

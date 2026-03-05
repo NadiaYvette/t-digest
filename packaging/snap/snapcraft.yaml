@@ -1,0 +1,49 @@
+name: t-digest
+version: '0.1.0'
+summary: Dunning t-digest implementations in multiple languages
+description: |
+  The t-digest is a data structure for accurate on-line accumulation of
+  rank-based statistics such as quantiles and trimmed means. This project
+  provides implementations of the Dunning t-digest algorithm in eight
+  programming languages: Ruby, Haskell, Common Lisp, Scheme, SML, Ada,
+  Prolog, and Mercury.
+
+base: core22
+grade: stable
+confinement: strict
+license: MIT
+
+architectures:
+  - build-on: [amd64]
+
+parts:
+  t-digest:
+    plugin: dump
+    source: https://github.com/NadiaYvette/t-digest/archive/refs/tags/v0.1.0.tar.gz
+    organize:
+      ruby/: share/t-digest/ruby/
+      haskell/: share/t-digest/haskell/
+      common-lisp/: share/t-digest/common-lisp/
+      scheme/: share/t-digest/scheme/
+      sml/: share/t-digest/sml/
+      ada/: share/t-digest/ada/
+      prolog/: share/t-digest/prolog/
+      mercury/: share/t-digest/mercury/
+    stage:
+      - share/t-digest/ruby/tdigest.rb
+      - share/t-digest/haskell/TDigest.hs
+      - share/t-digest/haskell/Main.hs
+      - share/t-digest/common-lisp/tdigest.lisp
+      - share/t-digest/common-lisp/demo.lisp
+      - share/t-digest/scheme/tdigest.scm
+      - share/t-digest/scheme/demo.scm
+      - share/t-digest/sml/tdigest.sml
+      - share/t-digest/sml/demo.sml
+      - share/t-digest/sml/demo.mlb
+      - share/t-digest/ada/tdigest.ads
+      - share/t-digest/ada/tdigest.adb
+      - share/t-digest/ada/demo.adb
+      - share/t-digest/prolog/tdigest.pl
+      - share/t-digest/prolog/demo.pl
+      - share/t-digest/mercury/tdigest.m
+      - share/t-digest/mercury/demo.m

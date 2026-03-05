@@ -1,18 +1,48 @@
--- | Dunning t-digest for online quantile estimation.
--- Merging digest variant with K_1 (arcsine) scale function.
--- Pure functional implementation using only base libraries.
+-- |
+-- Module      : TDigest
+-- Description : Dunning t-digest for online quantile estimation
+-- Stability   : experimental
+-- Maintainer  : Nadia Yvette Chambers
+--
+-- A pure functional implementation of the Dunning t-digest data structure,
+-- using the merging digest variant with the K1 (arcsine) scale function.
+-- The t-digest provides streaming, mergeable, memory-bounded approximation
+-- of quantile (percentile) queries with high accuracy in the tails.
+--
+-- This implementation uses only @base@ libraries; no external dependencies
+-- are required.
+--
+-- == Quick start
+--
+-- @
+-- import TDigest
+-- import Data.List ('Data.List.foldl\'')
+--
+-- main :: IO ()
+-- main = do
+--   let td = 'Data.List.foldl\'' (flip 'add') 'empty' [1.0 .. 10000.0]
+--   print ('quantile' 0.99 td)   -- Just ~9900.5
+--   print ('cdf' 5000.0 td)      -- Just ~0.5
+-- @
 
 module TDigest
-  ( TDigest
+  ( -- * Types
+    TDigest
   , Centroid(..)
+    -- * Construction
   , empty
   , emptyWith
+    -- * Insertion
   , add
   , addWeighted
+    -- * Compression
   , compress
+    -- * Queries
   , quantile
   , cdf
+    -- * Merging
   , merge
+    -- * Accessors
   , totalWeight
   , centroidCount
   ) where
@@ -24,30 +54,56 @@ import Data.Ord  (comparing)
 -- Types
 -- ---------------------------------------------------------------------------
 
+-- | A single centroid in the t-digest, representing a cluster of nearby values.
+--
+-- Each centroid tracks the weighted mean of its constituent values and the
+-- total weight (number of values, or sum of weights if non-unit weights are
+-- used).
 data Centroid = Centroid
   { cMean   :: {-# UNPACK #-} !Double
+    -- ^ Weighted mean of all values merged into this centroid.
   , cWeight :: {-# UNPACK #-} !Double
+    -- ^ Total weight (count) of values in this centroid.
   } deriving (Show)
 
+-- | The t-digest data structure for online quantile estimation.
+--
+-- Internally, it maintains a sorted list of 'Centroid's and an unsorted
+-- buffer. When the buffer reaches capacity, a compression pass merges
+-- buffer entries into the centroid list using the K1 scale function to
+-- enforce the size invariant: centroids near the tails are kept small
+-- (high accuracy) while centroids near the median may be large (saving
+-- space).
 data TDigest = TDigest
-  { tdCentroids  :: ![Centroid]    -- sorted by mean
-  , tdBuffer     :: ![Centroid]    -- unsorted buffered additions
-  , tdTotalWeight :: !Double
-  , tdMin        :: !Double
-  , tdMax        :: !Double
-  , tdDelta      :: !Double        -- compression parameter
-  , tdBufferCap  :: !Int           -- delta * 5
+  { tdCentroids  :: ![Centroid]    -- ^ Sorted (by mean) list of centroids.
+  , tdBuffer     :: ![Centroid]    -- ^ Unsorted buffered additions awaiting compression.
+  , tdTotalWeight :: !Double       -- ^ Sum of all weights ever added.
+  , tdMin        :: !Double        -- ^ Minimum value seen.
+  , tdMax        :: !Double        -- ^ Maximum value seen.
+  , tdDelta      :: !Double        -- ^ Compression parameter (typically 100).
+  , tdBufferCap  :: !Int           -- ^ Buffer capacity: @ceiling(delta * 5)@.
   } deriving (Show)
 
 -- ---------------------------------------------------------------------------
 -- Construction
 -- ---------------------------------------------------------------------------
 
--- | Create an empty t-digest with default delta = 100.
+-- | Create an empty t-digest with the default compression parameter (delta = 100).
+--
+-- >>> centroidCount empty
+-- 0
+-- >>> totalWeight empty
+-- 0.0
 empty :: TDigest
 empty = emptyWith 100
 
 -- | Create an empty t-digest with a given compression parameter.
+--
+-- Higher delta values produce more centroids and better accuracy at the
+-- cost of more memory. Typical values are 100--200.
+--
+-- >>> totalWeight (emptyWith 200)
+-- 0.0
 emptyWith :: Double -> TDigest
 emptyWith delta = TDigest
   { tdCentroids   = []
@@ -71,11 +127,22 @@ kScale delta q = (delta / (2 * pi)) * asin (2 * q - 1)
 -- Adding values
 -- ---------------------------------------------------------------------------
 
--- | Add a single value with weight 1.
+-- | Add a single value with weight 1 to the digest.
+--
+-- Triggers automatic compression when the internal buffer reaches capacity.
+--
+-- >>> quantile 0.5 (add 42.0 empty)
+-- Just 42.0
 add :: Double -> TDigest -> TDigest
 add x = addWeighted x 1
 
--- | Add a value with a given weight.
+-- | Add a value with a given weight to the digest.
+--
+-- This is useful when ingesting pre-aggregated data (e.g., centroids from
+-- another digest during a merge operation).
+--
+-- >>> totalWeight (addWeighted 10.0 5.0 empty)
+-- 5.0
 addWeighted :: Double -> Double -> TDigest -> TDigest
 addWeighted x w td =
   let td' = td
@@ -93,6 +160,10 @@ addWeighted x w td =
 -- ---------------------------------------------------------------------------
 
 -- | Compress the digest by merging the buffer into the centroid list.
+--
+-- Normally this is triggered automatically when the buffer fills up.
+-- You can call it explicitly if you want to ensure the digest is in
+-- a compressed state (e.g., before serialization).
 compress :: TDigest -> TDigest
 compress td
   | null (tdBuffer td) && length (tdCentroids td) <= 1 = td
@@ -140,7 +211,19 @@ mergeCentroid a b =
 -- Quantile estimation
 -- ---------------------------------------------------------------------------
 
--- | Estimate the value at quantile q (0 <= q <= 1).
+-- | Estimate the value at quantile @q@ (0 <= q <= 1).
+--
+-- Returns 'Nothing' if the digest is empty, otherwise 'Just' the estimated
+-- value. The q parameter is clamped to [0, 1].
+--
+-- The estimate is most accurate near the tails (q close to 0 or 1) due
+-- to the K1 scale function.
+--
+-- >>> let td = foldl (flip add) empty [1..1000]
+-- >>> quantile 0.5 td
+-- Just ...   -- approximately 500
+-- >>> quantile 0.0 td
+-- Just 1.0
 quantile :: Double -> TDigest -> Maybe Double
 quantile q td0
   | null cs   = Nothing
@@ -198,7 +281,17 @@ quantile q td0
 -- CDF estimation
 -- ---------------------------------------------------------------------------
 
--- | Estimate the cumulative distribution function at value x.
+-- | Estimate the cumulative distribution function (CDF) at value @x@.
+--
+-- Returns 'Nothing' if the digest is empty. Otherwise returns 'Just' a
+-- value in [0, 1] representing the estimated fraction of values less than
+-- or equal to @x@.
+--
+-- >>> let td = foldl (flip add) empty [1..1000]
+-- >>> cdf 500.0 td
+-- Just ...   -- approximately 0.5
+-- >>> cdf 0.0 td
+-- Just 0.0
 cdf :: Double -> TDigest -> Maybe Double
 cdf x td0
   | null cs   = Nothing
@@ -256,8 +349,19 @@ cdf x td0
 -- Merge
 -- ---------------------------------------------------------------------------
 
--- | Merge two t-digests. All centroids from the second are added as
--- buffered values into the first, then compressed.
+-- | Merge two t-digests into one.
+--
+-- All centroids from the second digest are added as buffered values into
+-- the first, then the result is compressed. This is useful for combining
+-- digests from distributed workers or parallel computations.
+--
+-- The resulting digest has the same accuracy guarantees as if all values
+-- had been added to a single digest.
+--
+-- >>> let td1 = foldl (flip add) empty [1..500]
+-- >>> let td2 = foldl (flip add) empty [501..1000]
+-- >>> totalWeight (merge td1 td2)
+-- 1000.0
 merge :: TDigest -> TDigest -> TDigest
 merge td other =
   let otherTd   = if null (tdBuffer other) then other else compress other
@@ -269,10 +373,16 @@ merge td other =
 -- Queries
 -- ---------------------------------------------------------------------------
 
+-- | Return the total weight of all values added to the digest.
+--
+-- For unit-weight additions, this equals the number of values added.
 totalWeight :: TDigest -> Double
 totalWeight = tdTotalWeight
 
--- | Number of centroids (after compressing any pending buffer).
+-- | Return the number of centroids after compressing any pending buffer.
+--
+-- For a digest with delta = 100, this is typically 50--100 centroids
+-- regardless of how many values have been added.
 centroidCount :: TDigest -> Int
 centroidCount td =
   let td' = if null (tdBuffer td) then td else compress td

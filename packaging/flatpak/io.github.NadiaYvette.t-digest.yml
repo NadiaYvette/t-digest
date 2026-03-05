@@ -1,0 +1,54 @@
+app-id: io.github.NadiaYvette.t-digest
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: /bin/true
+
+finish-args:
+  - --filesystem=home:ro
+
+modules:
+  - name: t-digest
+    buildsystem: simple
+    build-commands:
+      # Documentation
+      - install -d /app/share/doc/t-digest
+      - if [ -f LICENSE ]; then install -Dm644 LICENSE /app/share/doc/t-digest/LICENSE; fi
+
+      # Ruby
+      - install -Dm644 ruby/tdigest.rb /app/share/t-digest/ruby/tdigest.rb
+
+      # Haskell
+      - install -Dm644 haskell/TDigest.hs /app/share/t-digest/haskell/TDigest.hs
+      - install -Dm644 haskell/Main.hs /app/share/t-digest/haskell/Main.hs
+
+      # Common Lisp
+      - install -Dm644 common-lisp/tdigest.lisp /app/share/t-digest/common-lisp/tdigest.lisp
+      - install -Dm644 common-lisp/demo.lisp /app/share/t-digest/common-lisp/demo.lisp
+
+      # Scheme
+      - install -Dm644 scheme/tdigest.scm /app/share/t-digest/scheme/tdigest.scm
+      - install -Dm644 scheme/demo.scm /app/share/t-digest/scheme/demo.scm
+
+      # SML
+      - install -Dm644 sml/tdigest.sml /app/share/t-digest/sml/tdigest.sml
+      - install -Dm644 sml/demo.sml /app/share/t-digest/sml/demo.sml
+      - install -Dm644 sml/demo.mlb /app/share/t-digest/sml/demo.mlb
+
+      # Ada
+      - install -Dm644 ada/tdigest.ads /app/share/t-digest/ada/tdigest.ads
+      - install -Dm644 ada/tdigest.adb /app/share/t-digest/ada/tdigest.adb
+      - install -Dm644 ada/demo.adb /app/share/t-digest/ada/demo.adb
+
+      # Prolog
+      - install -Dm644 prolog/tdigest.pl /app/share/t-digest/prolog/tdigest.pl
+      - install -Dm644 prolog/demo.pl /app/share/t-digest/prolog/demo.pl
+
+      # Mercury
+      - install -Dm644 mercury/tdigest.m /app/share/t-digest/mercury/tdigest.m
+      - install -Dm644 mercury/demo.m /app/share/t-digest/mercury/demo.m
+
+    sources:
+      - type: archive
+        url: https://github.com/NadiaYvette/t-digest/archive/refs/tags/v0.1.0.tar.gz
+        sha256: PLACEHOLDER_SHA256

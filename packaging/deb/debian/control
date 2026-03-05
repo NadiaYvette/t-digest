@@ -1,0 +1,82 @@
+Source: t-digest
+Section: science
+Priority: optional
+Maintainer: Nadia Yvette Chambers <nadia.yvette.chambers@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/NadiaYvette/t-digest
+Vcs-Git: https://github.com/NadiaYvette/t-digest.git
+Vcs-Browser: https://github.com/NadiaYvette/t-digest
+Rules-Requires-Root: no
+
+Package: t-digest-doc
+Architecture: all
+Multi-Arch: foreign
+Description: Dunning t-digest implementations - documentation
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ contains documentation for the multi-language implementations.
+
+Package: t-digest-ruby
+Architecture: all
+Depends: ${misc:Depends}, ruby
+Description: Dunning t-digest implementation in Ruby
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Ruby implementation.
+
+Package: t-digest-haskell
+Architecture: all
+Depends: ${misc:Depends}, ghc
+Description: Dunning t-digest implementation in Haskell
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Haskell implementation.
+
+Package: t-digest-common-lisp
+Architecture: all
+Depends: ${misc:Depends}, sbcl
+Description: Dunning t-digest implementation in Common Lisp
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Common Lisp implementation.
+
+Package: t-digest-scheme
+Architecture: all
+Depends: ${misc:Depends}
+Description: Dunning t-digest implementation in Scheme
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Scheme implementation.
+
+Package: t-digest-sml
+Architecture: all
+Depends: ${misc:Depends}, mlton
+Description: Dunning t-digest implementation in Standard ML
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Standard ML implementation.
+
+Package: t-digest-ada
+Architecture: all
+Depends: ${misc:Depends}, gnat
+Description: Dunning t-digest implementation in Ada
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Ada implementation.
+
+Package: t-digest-prolog
+Architecture: all
+Depends: ${misc:Depends}, swi-prolog
+Description: Dunning t-digest implementation in Prolog
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Prolog implementation.
+
+Package: t-digest-mercury
+Architecture: all
+Depends: ${misc:Depends}, mercury
+Description: Dunning t-digest implementation in Mercury
+ The t-digest is a data structure for accurate on-line accumulation of
+ rank-based statistics such as quantiles and trimmed means. This package
+ provides the Mercury implementation.

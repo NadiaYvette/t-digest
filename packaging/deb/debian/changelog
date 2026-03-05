@@ -1,0 +1,7 @@
+t-digest (0.1.0-1) unstable; urgency=low
+
+  * Initial release.
+  * Implementations in Ruby, Haskell, Common Lisp, Scheme, SML, Ada,
+    Prolog, and Mercury.
+
+ -- Nadia Yvette Chambers <nadia.yvette.chambers@gmail.com>  Thu, 05 Mar 2026 00:00:00 +0000

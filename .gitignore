@@ -1,0 +1,21 @@
+# Compiled binaries
+ada/demo
+ada/bench
+ada/*.ali
+ada/*.o
+haskell/demo
+haskell/bench
+haskell/*.hi
+haskell/*.o
+sml/demo
+sml/bench
+mercury/demo
+mercury/bench
+mercury/Mercury/
+mercury/*.err
+mercury/*.mh
+
+# Editor files
+*~
+*.swp
+.DS_Store

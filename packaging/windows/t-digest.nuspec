@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>t-digest</id>
+    <version>0.1.0</version>
+    <title>t-digest</title>
+    <authors>Nadia Yvette Chambers</authors>
+    <owners>Nadia Yvette Chambers</owners>
+    <licenseUrl>https://github.com/NadiaYvette/t-digest/blob/main/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/NadiaYvette/t-digest</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>
+      Dunning t-digest implementations in multiple languages.
+
+      The t-digest is a data structure for accurate on-line accumulation of
+      rank-based statistics such as quantiles and trimmed means. This project
+      provides implementations in Ruby, Haskell, Common Lisp, Scheme, SML,
+      Ada, Prolog, and Mercury.
+    </description>
+    <summary>Dunning t-digest implementations in 8 languages</summary>
+    <releaseNotes>Initial release with implementations in Ruby, Haskell, Common Lisp, Scheme, SML, Ada, Prolog, and Mercury.</releaseNotes>
+    <copyright>Copyright 2026 Nadia Yvette Chambers</copyright>
+    <tags>t-digest statistics quantile algorithm ruby haskell lisp scheme sml ada prolog mercury</tags>
+  </metadata>
+  <files>
+    <file src="..\..\ruby\tdigest.rb" target="content\ruby\" />
+    <file src="..\..\haskell\TDigest.hs" target="content\haskell\" />
+    <file src="..\..\haskell\Main.hs" target="content\haskell\" />
+    <file src="..\..\common-lisp\tdigest.lisp" target="content\common-lisp\" />
+    <file src="..\..\common-lisp\demo.lisp" target="content\common-lisp\" />
+    <file src="..\..\scheme\tdigest.scm" target="content\scheme\" />
+    <file src="..\..\scheme\demo.scm" target="content\scheme\" />
+    <file src="..\..\sml\tdigest.sml" target="content\sml\" />
+    <file src="..\..\sml\demo.sml" target="content\sml\" />
+    <file src="..\..\sml\demo.mlb" target="content\sml\" />
+    <file src="..\..\ada\tdigest.ads" target="content\ada\" />
+    <file src="..\..\ada\tdigest.adb" target="content\ada\" />
+    <file src="..\..\ada\demo.adb" target="content\ada\" />
+    <file src="..\..\prolog\tdigest.pl" target="content\prolog\" />
+    <file src="..\..\prolog\demo.pl" target="content\prolog\" />
+    <file src="..\..\mercury\tdigest.m" target="content\mercury\" />
+    <file src="..\..\mercury\demo.m" target="content\mercury\" />
+  </files>
+</package>

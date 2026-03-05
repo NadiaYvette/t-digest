@@ -1,0 +1,57 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Pure source distribution; no compilation needed
+
+override_dh_auto_install:
+	# Documentation
+	install -d $(CURDIR)/debian/t-digest-doc/usr/share/doc/t-digest
+	if [ -f LICENSE ]; then \
+		install -m 644 LICENSE $(CURDIR)/debian/t-digest-doc/usr/share/doc/t-digest/; \
+	fi
+
+	# Ruby
+	install -d $(CURDIR)/debian/t-digest-ruby/usr/share/t-digest/ruby
+	install -m 644 ruby/tdigest.rb $(CURDIR)/debian/t-digest-ruby/usr/share/t-digest/ruby/
+
+	# Haskell
+	install -d $(CURDIR)/debian/t-digest-haskell/usr/share/t-digest/haskell
+	install -m 644 haskell/TDigest.hs $(CURDIR)/debian/t-digest-haskell/usr/share/t-digest/haskell/
+	install -m 644 haskell/Main.hs $(CURDIR)/debian/t-digest-haskell/usr/share/t-digest/haskell/
+
+	# Common Lisp
+	install -d $(CURDIR)/debian/t-digest-common-lisp/usr/share/t-digest/common-lisp
+	install -m 644 common-lisp/tdigest.lisp $(CURDIR)/debian/t-digest-common-lisp/usr/share/t-digest/common-lisp/
+	install -m 644 common-lisp/demo.lisp $(CURDIR)/debian/t-digest-common-lisp/usr/share/t-digest/common-lisp/
+
+	# Scheme
+	install -d $(CURDIR)/debian/t-digest-scheme/usr/share/t-digest/scheme
+	install -m 644 scheme/tdigest.scm $(CURDIR)/debian/t-digest-scheme/usr/share/t-digest/scheme/
+	install -m 644 scheme/demo.scm $(CURDIR)/debian/t-digest-scheme/usr/share/t-digest/scheme/
+
+	# SML
+	install -d $(CURDIR)/debian/t-digest-sml/usr/share/t-digest/sml
+	install -m 644 sml/tdigest.sml $(CURDIR)/debian/t-digest-sml/usr/share/t-digest/sml/
+	install -m 644 sml/demo.sml $(CURDIR)/debian/t-digest-sml/usr/share/t-digest/sml/
+	install -m 644 sml/demo.mlb $(CURDIR)/debian/t-digest-sml/usr/share/t-digest/sml/
+
+	# Ada
+	install -d $(CURDIR)/debian/t-digest-ada/usr/share/t-digest/ada
+	install -m 644 ada/tdigest.ads $(CURDIR)/debian/t-digest-ada/usr/share/t-digest/ada/
+	install -m 644 ada/tdigest.adb $(CURDIR)/debian/t-digest-ada/usr/share/t-digest/ada/
+	install -m 644 ada/demo.adb $(CURDIR)/debian/t-digest-ada/usr/share/t-digest/ada/
+
+	# Prolog
+	install -d $(CURDIR)/debian/t-digest-prolog/usr/share/t-digest/prolog
+	install -m 644 prolog/tdigest.pl $(CURDIR)/debian/t-digest-prolog/usr/share/t-digest/prolog/
+	install -m 644 prolog/demo.pl $(CURDIR)/debian/t-digest-prolog/usr/share/t-digest/prolog/
+
+	# Mercury
+	install -d $(CURDIR)/debian/t-digest-mercury/usr/share/t-digest/mercury
+	install -m 644 mercury/tdigest.m $(CURDIR)/debian/t-digest-mercury/usr/share/t-digest/mercury/
+	install -m 644 mercury/demo.m $(CURDIR)/debian/t-digest-mercury/usr/share/t-digest/mercury/
