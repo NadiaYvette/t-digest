@@ -21,31 +21,43 @@
 --   forM_ [1.0 .. 10000.0] $ \\v -> 'add' v td
 --   'quantile' 0.99 td
 -- @
-
 module TDigestM
   ( -- * Type
-    MDigest
+    MDigest,
+
     -- * Construction
-  , new, newWith
+    new,
+    newWith,
+
     -- * Insertion
-  , add, addWeighted
+    add,
+    addWeighted,
+
     -- * Compression
-  , compress
+    compress,
+
     -- * Queries
-  , quantile, cdf
+    quantile,
+    cdf,
+
     -- * Merging
-  , merge
+    merge,
+
     -- * Conversion
-  , freeze, thaw
+    freeze,
+    thaw,
+
     -- * Accessors
-  , totalWeight, centroidCount
+    totalWeight,
+    centroidCount,
+
     -- * Runner
-  , runTDigest
-  ) where
+    runTDigest,
+  )
+where
 
 import Control.Monad.ST (ST, runST)
-import Data.STRef        (STRef, newSTRef, readSTRef, writeSTRef, modifySTRef')
-
+import Data.STRef (STRef, modifySTRef', newSTRef, readSTRef, writeSTRef)
 import qualified TDigest as TD
 
 -- ---------------------------------------------------------------------------

@@ -47,10 +47,7 @@ fn main() {
     td1.merge(&td2);
 
     println!("\nAfter merge:");
-    println!(
-        "  median={:.6} (expected ~0.5)",
-        td1.quantile(0.5).unwrap()
-    );
+    println!("  median={:.6} (expected ~0.5)", td1.quantile(0.5).unwrap());
     println!(
         "  p99   ={:.6} (expected ~0.99)",
         td1.quantile(0.99).unwrap()

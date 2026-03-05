@@ -78,7 +78,11 @@ impl TDigest {
         let mut all = Vec::with_capacity(self.centroids.len() + self.buffer.len());
         all.append(&mut self.centroids);
         all.append(&mut self.buffer);
-        all.sort_by(|a, b| a.mean.partial_cmp(&b.mean).unwrap_or(std::cmp::Ordering::Equal));
+        all.sort_by(|a, b| {
+            a.mean
+                .partial_cmp(&b.mean)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let all_len = all.len();
         let mut new_centroids: Vec<Centroid> = Vec::with_capacity(all_len);
@@ -282,7 +286,13 @@ mod tests {
             td.add(i as f64 / n as f64, 1.0);
         }
 
-        let cases = [(0.5, 0.02), (0.1, 0.02), (0.9, 0.02), (0.01, 0.005), (0.99, 0.005)];
+        let cases = [
+            (0.5, 0.02),
+            (0.1, 0.02),
+            (0.9, 0.02),
+            (0.01, 0.005),
+            (0.99, 0.005),
+        ];
         for (q, tol) in cases {
             let est = td.quantile(q).unwrap();
             assert!(

@@ -28,11 +28,12 @@ defmodule TDigest do
     value = value * 1.0
     weight = weight * 1.0
 
-    td = %{td |
-      buffer: [{value, weight} | td.buffer],
-      total_weight: td.total_weight + weight,
-      min: min_val(td.min, value),
-      max: max_val(td.max, value)
+    td = %{
+      td
+      | buffer: [{value, weight} | td.buffer],
+        total_weight: td.total_weight + weight,
+        min: min_val(td.min, value),
+        max: max_val(td.max, value)
     }
 
     if length(td.buffer) >= td.buffer_cap do
@@ -43,7 +44,9 @@ defmodule TDigest do
   end
 
   @doc "Force compression of buffered centroids."
-  def compress(%TDigest{buffer: [], centroids: centroids} = td) when length(centroids) <= 1, do: td
+  def compress(%TDigest{buffer: [], centroids: centroids} = td) when length(centroids) <= 1,
+    do: td
+
   def compress(%TDigest{} = td) do
     all = (td.centroids ++ td.buffer) |> Enum.sort_by(fn {mean, _w} -> mean end)
     [{m0, w0} | rest] = all
@@ -83,6 +86,7 @@ defmodule TDigest do
 
   defp quantile_internal(%TDigest{centroids: []}, _q), do: nil
   defp quantile_internal(%TDigest{centroids: [{mean, _w}]}, _q), do: mean
+
   defp quantile_internal(%TDigest{} = td, q) do
     q = q |> max(0.0) |> min(1.0)
     n = td.total_weight
@@ -94,6 +98,7 @@ defmodule TDigest do
   end
 
   defp walk_quantile([], _i, _count, _cum, _target, _n, _mn, mx), do: mx
+
   defp walk_quantile([{mean, weight} | rest], i, count, cumulative, target, n, mn, mx) do
     # Left boundary
     if i == 0 and target < weight / 2.0 do
@@ -139,6 +144,7 @@ defmodule TDigest do
   defp cdf_internal(%TDigest{centroids: []}, _x), do: nil
   defp cdf_internal(%TDigest{} = td, x) when x <= td.min, do: 0.0
   defp cdf_internal(%TDigest{} = td, x) when x >= td.max, do: 1.0
+
   defp cdf_internal(%TDigest{} = td, x) do
     n = td.total_weight
     centroids = td.centroids
@@ -147,15 +153,16 @@ defmodule TDigest do
   end
 
   defp walk_cdf([], _i, _count, _cum, _x, _n, _mn, _mx), do: 1.0
+
   defp walk_cdf([{mean, weight} | rest], i, count, cumulative, x, n, mn, mx) do
     cond do
       i == 0 and x < mean ->
         inner_w = weight / 2.0
         frac = if mean == mn, do: 1.0, else: (x - mn) / (mean - mn)
-        (inner_w * frac) / n
+        inner_w * frac / n
 
       i == 0 and x == mean ->
-        (weight / 2.0) / n
+        weight / 2.0 / n
 
       i == count - 1 ->
         if x > mean do
@@ -189,6 +196,7 @@ defmodule TDigest do
   @doc "Merge another t-digest into this one."
   def merge(%TDigest{} = td, %TDigest{} = other) do
     other = if other.buffer != [], do: compress(other), else: other
+
     Enum.reduce(other.centroids, td, fn {mean, weight}, acc ->
       add(acc, mean, weight)
     end)
@@ -202,7 +210,7 @@ defmodule TDigest do
 
   # K1 scale function: k(q, delta) = (delta / (2*pi)) * asin(2*q - 1)
   defp k(q, delta) do
-    (delta / (2.0 * :math.pi())) * :math.asin(2.0 * q - 1.0)
+    delta / (2.0 * :math.pi()) * :math.asin(2.0 * q - 1.0)
   end
 
   defp min_val(:infinity, v), do: v

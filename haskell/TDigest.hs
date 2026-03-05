@@ -24,31 +24,37 @@
 --   print ('quantile' 0.99 td)   -- Just ~9900.5
 --   print ('cdf' 5000.0 td)      -- Just ~0.5
 -- @
-
 module TDigest
   ( -- * Types
-    TDigest
-  , Centroid(..)
-    -- * Construction
-  , empty
-  , emptyWith
-    -- * Insertion
-  , add
-  , addWeighted
-    -- * Compression
-  , compress
-    -- * Queries
-  , quantile
-  , cdf
-    -- * Merging
-  , merge
-    -- * Accessors
-  , totalWeight
-  , centroidCount
-  ) where
+    TDigest,
+    Centroid (..),
 
-import Data.List (sortBy, foldl')
-import Data.Ord  (comparing)
+    -- * Construction
+    empty,
+    emptyWith,
+
+    -- * Insertion
+    add,
+    addWeighted,
+
+    -- * Compression
+    compress,
+
+    -- * Queries
+    quantile,
+    cdf,
+
+    -- * Merging
+    merge,
+
+    -- * Accessors
+    totalWeight,
+    centroidCount,
+  )
+where
+
+import Data.List (foldl', sortBy)
+import Data.Ord (comparing)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -60,11 +66,12 @@ import Data.Ord  (comparing)
 -- total weight (number of values, or sum of weights if non-unit weights are
 -- used).
 data Centroid = Centroid
-  { cMean   :: {-# UNPACK #-} !Double
-    -- ^ Weighted mean of all values merged into this centroid.
-  , cWeight :: {-# UNPACK #-} !Double
-    -- ^ Total weight (count) of values in this centroid.
-  } deriving (Show)
+  { -- | Weighted mean of all values merged into this centroid.
+    cMean :: {-# UNPACK #-} !Double,
+    -- | Total weight (count) of values in this centroid.
+    cWeight :: {-# UNPACK #-} !Double
+  }
+  deriving (Show)
 
 -- | The t-digest data structure for online quantile estimation.
 --
@@ -75,14 +82,22 @@ data Centroid = Centroid
 -- (high accuracy) while centroids near the median may be large (saving
 -- space).
 data TDigest = TDigest
-  { tdCentroids  :: ![Centroid]    -- ^ Sorted (by mean) list of centroids.
-  , tdBuffer     :: ![Centroid]    -- ^ Unsorted buffered additions awaiting compression.
-  , tdTotalWeight :: !Double       -- ^ Sum of all weights ever added.
-  , tdMin        :: !Double        -- ^ Minimum value seen.
-  , tdMax        :: !Double        -- ^ Maximum value seen.
-  , tdDelta      :: !Double        -- ^ Compression parameter (typically 100).
-  , tdBufferCap  :: !Int           -- ^ Buffer capacity: @ceiling(delta * 5)@.
-  } deriving (Show)
+  { -- | Sorted (by mean) list of centroids.
+    tdCentroids :: ![Centroid],
+    -- | Unsorted buffered additions awaiting compression.
+    tdBuffer :: ![Centroid],
+    -- | Sum of all weights ever added.
+    tdTotalWeight :: !Double,
+    -- | Minimum value seen.
+    tdMin :: !Double,
+    -- | Maximum value seen.
+    tdMax :: !Double,
+    -- | Compression parameter (typically 100).
+    tdDelta :: !Double,
+    -- | Buffer capacity: @ceiling(delta * 5)@.
+    tdBufferCap :: !Int
+  }
+  deriving (Show)
 
 -- ---------------------------------------------------------------------------
 -- Construction
@@ -105,15 +120,16 @@ empty = emptyWith 100
 -- >>> totalWeight (emptyWith 200)
 -- 0.0
 emptyWith :: Double -> TDigest
-emptyWith delta = TDigest
-  { tdCentroids   = []
-  , tdBuffer       = []
-  , tdTotalWeight  = 0
-  , tdMin          = 1/0    -- +Infinity
-  , tdMax          = -(1/0) -- -Infinity
-  , tdDelta        = delta
-  , tdBufferCap    = ceiling (delta * 5)
-  }
+emptyWith delta =
+  TDigest
+    { tdCentroids = [],
+      tdBuffer = [],
+      tdTotalWeight = 0,
+      tdMin = 1 / 0, -- +Infinity
+      tdMax = -(1 / 0), -- -Infinity
+      tdDelta = delta,
+      tdBufferCap = ceiling (delta * 5)
+    }
 
 -- ---------------------------------------------------------------------------
 -- Scale function K_1
@@ -145,15 +161,16 @@ add x = addWeighted x 1
 -- 5.0
 addWeighted :: Double -> Double -> TDigest -> TDigest
 addWeighted x w td =
-  let td' = td
-        { tdBuffer      = Centroid x w : tdBuffer td
-        , tdTotalWeight  = tdTotalWeight td + w
-        , tdMin          = min x (tdMin td)
-        , tdMax          = max x (tdMax td)
-        }
-  in if length (tdBuffer td') >= tdBufferCap td'
-     then compress td'
-     else td'
+  let td' =
+        td
+          { tdBuffer = Centroid x w : tdBuffer td,
+            tdTotalWeight = tdTotalWeight td + w,
+            tdMin = min x (tdMin td),
+            tdMax = max x (tdMax td)
+          }
+   in if length (tdBuffer td') >= tdBufferCap td'
+        then compress td'
+        else td'
 
 -- ---------------------------------------------------------------------------
 -- Compression (greedy merge)
@@ -168,26 +185,27 @@ compress :: TDigest -> TDigest
 compress td
   | null (tdBuffer td) && length (tdCentroids td) <= 1 = td
   | otherwise =
-    let allItems = tdCentroids td ++ tdBuffer td
-        sorted   = sortBy (comparing cMean) allItems
-        n        = tdTotalWeight td
-        delta    = tdDelta td
-        merged   = greedyMerge delta n sorted
-    in td { tdCentroids = merged
-          , tdBuffer    = []
-          }
+      let allItems = tdCentroids td ++ tdBuffer td
+          sorted = sortBy (comparing cMean) allItems
+          n = tdTotalWeight td
+          delta = tdDelta td
+          merged = greedyMerge delta n sorted
+       in td
+            { tdCentroids = merged,
+              tdBuffer = []
+            }
 
 -- | Greedy merge pass: walk sorted centroids and merge adjacent ones
 -- when the scale function constraint allows it.
 greedyMerge :: Double -> Double -> [Centroid] -> [Centroid]
-greedyMerge _     _ []     = []
-greedyMerge delta n (c:cs) = go 0 c cs
+greedyMerge _ _ [] = []
+greedyMerge delta n (c : cs) = go 0 c cs
   where
     k = kScale delta
 
     go :: Double -> Centroid -> [Centroid] -> [Centroid]
-    go _          current []     = [current]
-    go weightSoFar current (item:rest)
+    go _ current [] = [current]
+    go weightSoFar current (item : rest)
       -- Always allow merging when the proposed weight is tiny (single count).
       | proposed <= 1 && not (null rest) =
           go weightSoFar (mergeCentroid current item) rest
@@ -197,15 +215,15 @@ greedyMerge delta n (c:cs) = go 0 c cs
           current : go (weightSoFar + cWeight current) item rest
       where
         proposed = cWeight current + cWeight item
-        q0       = weightSoFar / n
-        q1       = (weightSoFar + proposed) / n
+        q0 = weightSoFar / n
+        q1 = (weightSoFar + proposed) / n
 
 -- | Merge a centroid into another using weighted mean.
 mergeCentroid :: Centroid -> Centroid -> Centroid
 mergeCentroid a b =
   let w = cWeight a + cWeight b
       m = (cMean a * cWeight a + cMean b * cWeight b) / w
-  in Centroid m w
+   in Centroid m w
 
 -- ---------------------------------------------------------------------------
 -- Quantile estimation
@@ -226,56 +244,57 @@ mergeCentroid a b =
 -- Just 1.0
 quantile :: Double -> TDigest -> Maybe Double
 quantile q td0
-  | null cs   = Nothing
+  | null cs = Nothing
   | length cs == 1 = Just (cMean (head cs))
   | otherwise = Just (walkQuantile (clamp 0 1 q) cs)
   where
     td = if null (tdBuffer td0) then td0 else compress td0
     cs = tdCentroids td
-    n  = tdTotalWeight td
+    n = tdTotalWeight td
     mn = tdMin td
     mx = tdMax td
 
     walkQuantile :: Double -> [Centroid] -> Double
     walkQuantile q' centroids = go 0 0 centroids
       where
-        target       = q' * n
+        target = q' * n
         numCentroids = length centroids
-        lastIdx      = numCentroids - 1
+        lastIdx = numCentroids - 1
 
         go :: Int -> Double -> [Centroid] -> Double
-        go _ _ [] = mx  -- fallback
-        go i cumulative (c:rest) =
+        go _ _ [] = mx -- fallback
+        go i cumulative (c : rest) =
           let mid = cumulative + cWeight c / 2
-          in
-          -- Left boundary: interpolate between min and first centroid
-          if i == 0 && target < cWeight c / 2
-          then
-            if cWeight c == 1
-            then mn
-            else mn + (cMean c - mn) * (target / (cWeight c / 2))
-          -- Right boundary: interpolate between last centroid and max
-          else if i == lastIdx
-          then
-            if target > n - cWeight c / 2
-            then
-              if cWeight c == 1
-              then mx
-              else
-                let remaining = n - cWeight c / 2
-                in cMean c + (mx - cMean c) * ((target - remaining) / (cWeight c / 2))
-            else cMean c
-          -- Middle: interpolate between adjacent centroid midpoints
-          else
-            let nextC   = head rest
-                nextMid = cumulative + cWeight c + cWeight nextC / 2
-            in if target <= nextMid
-               then
-                 let frac = if nextMid == mid
-                            then 0.5
-                            else (target - mid) / (nextMid - mid)
-                 in cMean c + frac * (cMean nextC - cMean c)
-               else go (i + 1) (cumulative + cWeight c) rest
+           in -- Left boundary: interpolate between min and first centroid
+              if i == 0 && target < cWeight c / 2
+                then
+                  if cWeight c == 1
+                    then mn
+                    else mn + (cMean c - mn) * (target / (cWeight c / 2))
+                -- Right boundary: interpolate between last centroid and max
+                else
+                  if i == lastIdx
+                    then
+                      if target > n - cWeight c / 2
+                        then
+                          if cWeight c == 1
+                            then mx
+                            else
+                              let remaining = n - cWeight c / 2
+                               in cMean c + (mx - cMean c) * ((target - remaining) / (cWeight c / 2))
+                        else cMean c
+                    -- Middle: interpolate between adjacent centroid midpoints
+                    else
+                      let nextC = head rest
+                          nextMid = cumulative + cWeight c + cWeight nextC / 2
+                       in if target <= nextMid
+                            then
+                              let frac =
+                                    if nextMid == mid
+                                      then 0.5
+                                      else (target - mid) / (nextMid - mid)
+                               in cMean c + frac * (cMean nextC - cMean c)
+                            else go (i + 1) (cumulative + cWeight c) rest
 
 -- ---------------------------------------------------------------------------
 -- CDF estimation
@@ -294,14 +313,14 @@ quantile q td0
 -- Just 0.0
 cdf :: Double -> TDigest -> Maybe Double
 cdf x td0
-  | null cs   = Nothing
-  | x <= mn   = Just 0
-  | x >= mx   = Just 1
+  | null cs = Nothing
+  | x <= mn = Just 0
+  | x >= mx = Just 1
   | otherwise = Just (walkCdf x cs)
   where
     td = if null (tdBuffer td0) then td0 else compress td0
     cs = tdCentroids td
-    n  = tdTotalWeight td
+    n = tdTotalWeight td
     mn = tdMin td
     mx = tdMax td
 
@@ -309,41 +328,46 @@ cdf x td0
     walkCdf x' centroids = go 0 0 centroids
       where
         numCentroids = length centroids
-        lastIdx      = numCentroids - 1
+        lastIdx = numCentroids - 1
 
         go :: Int -> Double -> [Centroid] -> Double
-        go _ _ [] = 1.0  -- fallback
-        go i cumulative (c:rest)
+        go _ _ [] = 1.0 -- fallback
+        go i cumulative (c : rest)
           -- First centroid: left boundary
           | i == 0 && x' < cMean c =
               let innerW = cWeight c / 2
-                  frac   = if cMean c == mn then 1.0
-                           else (x' - mn) / (cMean c - mn)
-              in (innerW * frac) / n
+                  frac =
+                    if cMean c == mn
+                      then 1.0
+                      else (x' - mn) / (cMean c - mn)
+               in (innerW * frac) / n
           | i == 0 && x' == cMean c =
               (cWeight c / 2) / n
           -- Last centroid: right boundary
           | i == lastIdx && x' > cMean c =
-              let halfW  = cWeight c / 2
+              let halfW = cWeight c / 2
                   rightW = n - cumulative - halfW
-                  frac   = if mx == cMean c then 0.0
-                           else (x' - cMean c) / (mx - cMean c)
-              in (cumulative + halfW + rightW * frac) / n
+                  frac =
+                    if mx == cMean c
+                      then 0.0
+                      else (x' - cMean c) / (mx - cMean c)
+               in (cumulative + halfW + rightW * frac) / n
           | i == lastIdx =
               (cumulative + cWeight c / 2) / n
           -- Middle: interpolate between centroid midpoints
           | otherwise =
-              let mid            = cumulative + cWeight c / 2
-                  nextC          = head rest
+              let mid = cumulative + cWeight c / 2
+                  nextC = head rest
                   nextCumulative = cumulative + cWeight c
-                  nextMid        = nextCumulative + cWeight nextC / 2
-              in if x' < cMean nextC
-                 then
-                   let frac = if cMean c == cMean nextC
+                  nextMid = nextCumulative + cWeight nextC / 2
+               in if x' < cMean nextC
+                    then
+                      let frac =
+                            if cMean c == cMean nextC
                               then 0.5
                               else (x' - cMean c) / (cMean nextC - cMean c)
-                   in (mid + frac * (nextMid - mid)) / n
-                 else go (i + 1) (cumulative + cWeight c) rest
+                       in (mid + frac * (nextMid - mid)) / n
+                    else go (i + 1) (cumulative + cWeight c) rest
 
 -- ---------------------------------------------------------------------------
 -- Merge
@@ -364,10 +388,10 @@ cdf x td0
 -- 1000.0
 merge :: TDigest -> TDigest -> TDigest
 merge td other =
-  let otherTd   = if null (tdBuffer other) then other else compress other
-      otherCs   = tdCentroids otherTd
-      combined  = foldl' (\d c -> addWeighted (cMean c) (cWeight c) d) td otherCs
-  in compress combined
+  let otherTd = if null (tdBuffer other) then other else compress other
+      otherCs = tdCentroids otherTd
+      combined = foldl' (\d c -> addWeighted (cMean c) (cWeight c) d) td otherCs
+   in compress combined
 
 -- ---------------------------------------------------------------------------
 -- Queries
@@ -386,7 +410,7 @@ totalWeight = tdTotalWeight
 centroidCount :: TDigest -> Int
 centroidCount td =
   let td' = if null (tdBuffer td) then td else compress td
-  in length (tdCentroids td')
+   in length (tdCentroids td')
 
 -- ---------------------------------------------------------------------------
 -- Utility
@@ -394,6 +418,6 @@ centroidCount td =
 
 clamp :: Double -> Double -> Double -> Double
 clamp lo hi x
-  | x < lo   = lo
-  | x > hi   = hi
+  | x < lo = lo
+  | x > hi = hi
   | otherwise = x
