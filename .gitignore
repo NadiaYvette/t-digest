@@ -1,4 +1,4 @@
-# Compiled binaries
+# Compiled binaries and build artifacts
 ada/demo
 ada/bench
 ada/*.ali
@@ -14,6 +14,29 @@ mercury/bench
 mercury/Mercury/
 mercury/*.err
 mercury/*.mh
+c/demo
+cpp/demo
+go/demo/demo
+rust/target/
+java/*.class
+kotlin/*.jar
+nim/demo
+ocaml/demo
+ocaml/*.cmi
+ocaml/*.cmx
+ocaml/*.o
+zig/demo
+zig/.zig-cache/
+d/demo
+d/*.o
+fortran/demo
+fortran/*.mod
+fortran/*.o
+csharp/demo.exe
+csharp/bin/
+csharp/obj/
+swift/demo
+erlang/*.beam
 
 # Editor files
 *~

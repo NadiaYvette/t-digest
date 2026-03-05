@@ -1,5 +1,5 @@
 {
-  description = "Dunning t-digest implementations in multiple languages";
+  description = "Dunning t-digest implementations in 28 programming languages";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -22,35 +22,66 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            # Ruby
-            ruby
-
-            # Haskell
-            ghc
-            cabal-install
-
-            # Common Lisp
-            sbcl
-
-            # Scheme
-            guile
-
-            # SML
-            mlton
-
-            # Ada
+            # Systems languages
+            gcc
+            gnumake
+            zig
+            nim
             gnat
 
-            # Prolog
-            swiProlog
+            # C++/D
+            clang
 
-            # Mercury
+            # Go
+            go
+
+            # Rust
+            rustc
+            cargo
+
+            # JVM
+            jdk
+            kotlin
+
+            # .NET
+            dotnet-sdk
+
+            # Functional
+            ghc
+            cabal-install
+            mlton
+            ocaml
+            ocamlPackages.findlib
+            erlang
+            elixir
+
+            # Logic
+            swiProlog
             mercury
+
+            # Scripting
+            ruby
+            python3
+            perl
+            lua
+
+            # Scientific
+            julia
+            R
+
+            # Lisp family
+            sbcl
+            chicken
+
+            # Fortran
+            gfortran
+
+            # Swift
+            swift
           ];
 
           shellHook = ''
-            echo "t-digest multi-language development environment"
-            echo "Available languages: Ruby, Haskell, Common Lisp, Scheme, SML, Ada, Prolog, Mercury"
+            echo "t-digest development environment (28 languages)"
           '';
         };
       }

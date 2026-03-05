@@ -9,7 +9,7 @@ Online quantile estimation with the Dunning t-digest algorithm.
 ## Overview
 
 This repository contains implementations of the **merging t-digest** data
-structure in eight programming languages. The t-digest provides fast,
+structure in 28 programming languages. The t-digest provides fast,
 memory-bounded, mergeable approximation of quantiles (percentiles) from
 streaming data, with especially high accuracy in the tails (p99, p99.9,
 etc.).
@@ -19,77 +19,125 @@ in Dunning & Ertl (2019).
 
 ## Implementations
 
-| Language      | Files                              | Style              |
-|---------------|------------------------------------|---------------------|
-| Haskell       | `haskell/TDigest.hs`, `Main.hs`   | Pure functional     |
-| Ruby          | `ruby/tdigest.rb`                  | Object-oriented     |
-| Ada           | `ada/tdigest.ads`, `tdigest.adb`   | Imperative/record   |
-| Common Lisp   | `common-lisp/tdigest.lisp`         | Struct-based        |
-| Scheme        | `scheme/tdigest.scm`               | Functional/mutable  |
-| Standard ML   | `sml/tdigest.sml`                  | Pure functional     |
-| Prolog        | `prolog/tdigest.pl`                | Logic/relational    |
-| Mercury       | `mercury/tdigest.m`                | Pure functional     |
+| Language      | Directory      | Files                              | Style              |
+|---------------|----------------|------------------------------------|---------------------|
+| Ada           | `ada/`         | `tdigest.ads`, `tdigest.adb`      | Imperative/record   |
+| C             | `c/`           | `tdigest.h`, `tdigest.c`          | Procedural          |
+| C++           | `cpp/`         | `tdigest.hpp`, `tdigest.cpp`      | Object-oriented     |
+| C#            | `csharp/`      | `TDigest.cs`                      | Object-oriented     |
+| Common Lisp   | `common-lisp/` | `tdigest.lisp`                    | Struct-based        |
+| D             | `d/`           | `tdigest.d`                       | Struct-based        |
+| Elixir        | `elixir/`      | `tdigest.ex`                      | Functional/struct   |
+| Erlang        | `erlang/`      | `tdigest.erl`                     | Functional/records  |
+| Fortran       | `fortran/`     | `tdigest.f90`                     | Module/derived type |
+| Go            | `go/`          | `tdigest.go`                      | Struct/methods      |
+| Haskell       | `haskell/`     | `TDigest.hs`                      | Pure functional     |
+| Java          | `java/`        | `TDigest.java`                    | Object-oriented     |
+| Julia         | `julia/`       | `TDigest.jl`                      | Multiple dispatch   |
+| Kotlin        | `kotlin/`      | `TDigest.kt`                      | Object-oriented     |
+| Lua           | `lua/`         | `tdigest.lua`                     | Table-based OOP     |
+| Mercury       | `mercury/`     | `tdigest.m`                       | Pure functional     |
+| Nim           | `nim/`         | `tdigest.nim`                     | Object/proc-based   |
+| OCaml         | `ocaml/`       | `tdigest.ml`                      | Functional/record   |
+| Perl          | `perl/`        | `TDigest.pm`                      | OOP (bless-based)   |
+| Prolog        | `prolog/`      | `tdigest.pl`                      | Logic/relational    |
+| Python        | `python/`      | `tdigest.py`                      | Class-based         |
+| R             | `r/`           | `tdigest.R`                       | Environment-based   |
+| Ruby          | `ruby/`        | `tdigest.rb`                      | Object-oriented     |
+| Rust          | `rust/`        | `src/lib.rs`                      | Struct/impl         |
+| Scheme        | `scheme/`      | `tdigest.scm`                     | Functional/mutable  |
+| Standard ML   | `sml/`         | `tdigest.sml`                     | Pure functional     |
+| Swift         | `swift/`       | `tdigest.swift`                   | Struct/mutating     |
+| Zig           | `zig/`         | `tdigest.zig`                     | Procedural/struct   |
 
 ## Quick Start
 
-### Haskell
+Each language directory contains a library file and a `demo` program.
 
 ```bash
-cd haskell/
-ghc -O2 -o demo Main.hs TDigest.hs
-./demo
-```
+# C
+cd c/ && gcc -O2 -lm -o demo demo.c tdigest.c && ./demo
 
-### Ruby
+# C++
+cd cpp/ && g++ -O2 -std=c++17 -o demo demo.cpp tdigest.cpp && ./demo
 
-```bash
-cd ruby/
-ruby tdigest.rb
-```
+# Go
+cd go/demo && go run .
 
-### Ada
+# Rust
+cd rust/ && cargo run --release
 
-```bash
-cd ada/
-gnatmake demo.adb
-./demo
-```
+# Java
+cd java/ && javac TDigest.java Demo.java && java Demo
 
-### Common Lisp
+# Python
+cd python/ && python3 demo.py
 
-```bash
-cd common-lisp/
-sbcl --script demo.lisp
-```
+# Ruby
+cd ruby/ && ruby tdigest.rb
 
-### Scheme
+# Haskell
+cd haskell/ && ghc -O2 -o demo Main.hs && ./demo
 
-```bash
-cd scheme/
-csi -R r5rs -script demo.scm
-```
+# Ada
+cd ada/ && gnatmake -O2 demo.adb -o demo && ./demo
 
-### Standard ML
+# Common Lisp
+cd common-lisp/ && sbcl --script demo.lisp
 
-```bash
-cd sml/
-mlton demo.mlb
-./demo
-```
+# Scheme
+cd scheme/ && csi -R r5rs -script demo.scm
 
-### Prolog
+# Standard ML
+cd sml/ && mlton demo.mlb && ./demo
 
-```bash
-cd prolog/
-swipl demo.pl
-```
+# Prolog
+cd prolog/ && swipl demo.pl
 
-### Mercury
+# Mercury
+cd mercury/ && mmc --make demo && ./demo
 
-```bash
-cd mercury/
-mmc --make demo
-./demo
+# OCaml
+cd ocaml/ && ocamlfind ocamlopt tdigest.ml demo.ml -o demo && ./demo
+
+# Julia
+cd julia/ && julia demo.jl
+
+# Erlang
+cd erlang/ && erlc tdigest.erl demo.erl && erl -noshell -s demo main -s init stop
+
+# Elixir
+cd elixir/ && elixir demo.exs
+
+# Fortran
+cd fortran/ && gfortran -O2 -o demo tdigest.f90 demo.f90 && ./demo
+
+# Perl
+cd perl/ && perl -I. demo.pl
+
+# Lua
+cd lua/ && lua demo.lua
+
+# R
+cd r/ && Rscript demo.R
+
+# Zig
+cd zig/ && zig build-exe demo.zig -O ReleaseFast && ./demo
+
+# Nim
+cd nim/ && nim c -d:release -o:demo demo.nim && ./demo
+
+# D
+cd d/ && dmd -O -of=demo demo.d tdigest.d && ./demo
+
+# Kotlin
+cd kotlin/ && kotlinc TDigest.kt Demo.kt -include-runtime -d demo.jar && java -jar demo.jar
+
+# C#
+cd csharp/ && dotnet run
+
+# Swift
+cd swift/ && swiftc -O -o demo tdigest.swift demo.swift && ./demo
 ```
 
 ## Documentation
@@ -109,10 +157,14 @@ The documentation includes:
   core ideas
 - **Algorithm Details** -- Formal pseudocode, scale function variants,
   accuracy analysis, and comparison with other quantile sketches
-- **API Reference** -- Function signatures and usage for all eight
+- **API Reference** -- Function signatures and usage for all
   language implementations
 - **Getting Started** -- Build and run instructions for every language
 - **References** -- Academic papers and related work
+
+Documentation is available in 36 languages including English, Hindi,
+Bengali, Tamil, Japanese, Korean, Chinese, Arabic, Lojban, Toki Pona,
+and more.
 
 ## Algorithm Summary
 

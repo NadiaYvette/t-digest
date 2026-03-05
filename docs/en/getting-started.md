@@ -174,17 +174,231 @@ dependency of `demo.m`.
 
 ---
 
-## Running All Demos
+## C
 
-From the project root, you can run all demos in sequence:
+**Prerequisites:** GCC or Clang
 
 ```bash
-echo "=== Haskell ===" && (cd haskell && ghc -O2 -o demo Main.hs TDigest.hs && ./demo)
-echo "=== Ruby ===" && (cd ruby && ruby tdigest.rb)
-echo "=== Ada ===" && (cd ada && gnatmake demo.adb && ./demo)
-echo "=== Common Lisp ===" && (cd common-lisp && sbcl --script demo.lisp)
-echo "=== Scheme ===" && (cd scheme && csi -R r5rs -script demo.scm)
-echo "=== SML ===" && (cd sml && mlton demo.mlb && ./demo)
-echo "=== Prolog ===" && (cd prolog && swipl demo.pl)
-echo "=== Mercury ===" && (cd mercury && mmc --make demo && ./demo)
+cd c/
+gcc -O2 -lm -o demo demo.c tdigest.c
+./demo
+```
+
+---
+
+## C++
+
+**Prerequisites:** G++ or Clang++ (C++17)
+
+```bash
+cd cpp/
+g++ -O2 -std=c++17 -o demo demo.cpp tdigest.cpp
+./demo
+```
+
+---
+
+## Go
+
+**Prerequisites:** Go (>= 1.18)
+
+```bash
+cd go/demo
+go run .
+```
+
+---
+
+## Rust
+
+**Prerequisites:** Cargo and Rust toolchain
+
+```bash
+cd rust/
+cargo run --release
+```
+
+---
+
+## Java
+
+**Prerequisites:** JDK (>= 11)
+
+```bash
+cd java/
+javac TDigest.java Demo.java
+java Demo
+```
+
+---
+
+## Kotlin
+
+**Prerequisites:** Kotlin compiler
+
+```bash
+cd kotlin/
+kotlinc TDigest.kt Demo.kt -include-runtime -d demo.jar
+java -jar demo.jar
+```
+
+---
+
+## Python
+
+**Prerequisites:** Python 3 (no external dependencies)
+
+```bash
+cd python/
+python3 demo.py
+```
+
+---
+
+## Julia
+
+**Prerequisites:** Julia (>= 1.6)
+
+```bash
+cd julia/
+julia demo.jl
+```
+
+---
+
+## OCaml
+
+**Prerequisites:** OCaml compiler with ocamlfind
+
+```bash
+cd ocaml/
+ocamlfind ocamlopt tdigest.ml demo.ml -o demo
+./demo
+```
+
+---
+
+## Erlang
+
+**Prerequisites:** Erlang/OTP
+
+```bash
+cd erlang/
+erlc tdigest.erl demo.erl
+erl -noshell -s demo main -s init stop
+```
+
+---
+
+## Elixir
+
+**Prerequisites:** Elixir (>= 1.12)
+
+```bash
+cd elixir/
+elixir demo.exs
+```
+
+---
+
+## Fortran
+
+**Prerequisites:** GFortran or other Fortran 2003+ compiler
+
+```bash
+cd fortran/
+gfortran -O2 -o demo tdigest.f90 demo.f90
+./demo
+```
+
+---
+
+## Perl
+
+**Prerequisites:** Perl 5
+
+```bash
+cd perl/
+perl -I. demo.pl
+```
+
+---
+
+## Lua
+
+**Prerequisites:** Lua (>= 5.1)
+
+```bash
+cd lua/
+lua demo.lua
+```
+
+---
+
+## R
+
+**Prerequisites:** R (>= 3.0)
+
+```bash
+cd r/
+Rscript demo.R
+```
+
+---
+
+## Zig
+
+**Prerequisites:** Zig compiler
+
+```bash
+cd zig/
+zig build-exe demo.zig -O ReleaseFast
+./demo
+```
+
+---
+
+## Nim
+
+**Prerequisites:** Nim compiler
+
+```bash
+cd nim/
+nim c -d:release -o:demo demo.nim
+./demo
+```
+
+---
+
+## D
+
+**Prerequisites:** DMD or LDC2
+
+```bash
+cd d/
+dmd -O -of=demo demo.d tdigest.d
+./demo
+```
+
+---
+
+## C#
+
+**Prerequisites:** .NET SDK or Mono
+
+```bash
+cd csharp/
+dotnet run
+```
+
+---
+
+## Swift
+
+**Prerequisites:** Swift compiler
+
+```bash
+cd swift/
+swiftc -O -o demo tdigest.swift demo.swift
+./demo
 ```

@@ -12,9 +12,10 @@ BuildArch:      noarch
 %description
 The t-digest is a data structure for accurate on-line accumulation of
 rank-based statistics such as quantiles and trimmed means. This project
-provides implementations of the Dunning t-digest algorithm in eight
-programming languages: Ruby, Haskell, Common Lisp, Scheme, SML, Ada,
-Prolog, and Mercury.
+provides implementations of the Dunning t-digest algorithm in 28
+programming languages: Ada, C, C++, C#, Common Lisp, D, Elixir, Erlang,
+Fortran, Go, Haskell, Java, Julia, Kotlin, Lua, Mercury, Nim, OCaml,
+Perl, Prolog, Python, R, Ruby, Rust, Scheme, Standard ML, Swift, and Zig.
 
 %package        doc
 Summary:        Documentation for %{name}

@@ -1,0 +1,13 @@
+[package]
+name = "tdigest"
+version = "0.1.0"
+edition = "2021"
+description = "Dunning t-digest for online quantile estimation"
+
+[[bin]]
+name = "tdigest-demo"
+path = "src/main.rs"
+
+[lib]
+name = "tdigest"
+path = "src/lib.rs"
