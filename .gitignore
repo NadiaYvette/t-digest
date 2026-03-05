@@ -38,6 +38,13 @@ csharp/obj/
 swift/demo
 erlang/*.beam
 
+# Misc build artifacts
+__pycache__/
+*.pyc
+*.beam
+erl_crash.dump
+rust/target/
+
 # Editor files
 *~
 *.swp
