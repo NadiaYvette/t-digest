@@ -2,7 +2,7 @@
 -- Merging digest variant with K_1 (arcsine) scale function.
 -- Pure functional implementation using only base libraries.
 
-module Main
+module TDigest
   ( TDigest
   , Centroid(..)
   , empty
@@ -15,7 +15,6 @@ module Main
   , merge
   , totalWeight
   , centroidCount
-  , main
   ) where
 
 import Data.List (sortBy, foldl')
@@ -288,110 +287,3 @@ clamp lo hi x
   | x < lo   = lo
   | x > hi   = hi
   | otherwise = x
-
--- ---------------------------------------------------------------------------
--- Main: demo and self-test
--- ---------------------------------------------------------------------------
-
-main :: IO ()
-main = do
-  let numValues = 10000 :: Int
-
-  -- Insert uniformly spaced values in [0, 1): 0/n, 1/n, ..., (n-1)/n
-  let values = [ fromIntegral i / fromIntegral numValues | i <- [0 .. numValues - 1] ]
-
-  -- Build t-digest
-  let td = foldl' (flip add) empty values
-
-  putStrLn $ "T-Digest demo: " ++ show numValues ++ " uniform values in [0, 1)"
-  putStrLn $ "Centroids: " ++ show (centroidCount td)
-  putStrLn ""
-
-  -- Quantile estimates
-  putStrLn "Quantile estimates (expected ~ q for uniform):"
-  let qs = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999] :: [Double]
-  mapM_ (\q -> do
-    let Just est = quantile q td
-        err = abs (est - q)
-    putStrLn $ "  q=" ++ padRight 6 (showFFloat3 q)
-            ++ "  estimated=" ++ showFFloat6 est
-            ++ "  error=" ++ showFFloat6 err
-    ) qs
-
-  putStrLn ""
-
-  -- CDF estimates
-  putStrLn "CDF estimates (expected ~ x for uniform):"
-  let xs = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999] :: [Double]
-  mapM_ (\x -> do
-    let Just est = cdf x td
-        err = abs (est - x)
-    putStrLn $ "  x=" ++ padRight 6 (showFFloat3 x)
-            ++ "  estimated=" ++ showFFloat6 est
-            ++ "  error=" ++ showFFloat6 err
-    ) xs
-
-  putStrLn ""
-
-  -- Test merge: split values into two halves, merge, check
-  let vals1 = [ fromIntegral i / fromIntegral numValues | i <- [0 .. 4999 :: Int] ]
-      vals2 = [ fromIntegral i / fromIntegral numValues | i <- [5000 .. 9999 :: Int] ]
-      td1 = foldl' (flip add) empty vals1
-      td2 = foldl' (flip add) empty vals2
-      tdM = merge td1 td2
-
-  putStrLn "After merge of two 5000-element digests:"
-  case quantile 0.5 tdM of
-    Just m  -> putStrLn $ "  median=" ++ showFFloat6 m ++ " (expected ~0.5)"
-    Nothing -> putStrLn "  median=N/A"
-  case quantile 0.99 tdM of
-    Just p  -> putStrLn $ "  p99   =" ++ showFFloat6 p ++ " (expected ~0.99)"
-    Nothing -> putStrLn "  p99   =N/A"
-  putStrLn $ "  centroids=" ++ show (centroidCount tdM)
-
-  putStrLn ""
-
-  -- Verify merge preserves total weight
-  putStrLn $ "Merge total weight: " ++ show (totalWeight tdM)
-              ++ " (expected " ++ show (totalWeight td1 + totalWeight td2) ++ ")"
-
-  putStrLn ""
-  putStrLn "Done."
-
--- ---------------------------------------------------------------------------
--- Formatting helpers (no dependency on Text.Printf)
--- ---------------------------------------------------------------------------
-
--- | Show a Double with approximately 6 decimal places.
-showFFloat6 :: Double -> String
-showFFloat6 x = showFFloatN 6 x
-
--- | Show a Double with approximately 3 decimal places.
-showFFloat3 :: Double -> String
-showFFloat3 x = showFFloatN 3 x
-
--- | Show a Double with n decimal places.
-showFFloatN :: Int -> Double -> String
-showFFloatN n x
-  | isInfinite x = if x > 0 then "Inf" else "-Inf"
-  | isNaN x      = "NaN"
-  | x < 0        = "-" ++ showFFloatN n (negate x)
-  | otherwise     =
-      let factor   = 10 ^ n :: Integer
-          scaled   = round (x * fromIntegral factor) :: Integer
-          wholePart = scaled `div` factor
-          fracPart  = scaled `mod` factor
-          fracStr   = padLeftZ n (show fracPart)
-      in show wholePart ++ "." ++ fracStr
-
--- | Pad a string with leading zeros to length n.
-padLeftZ :: Int -> String -> String
-padLeftZ n s
-  | length s >= n = s
-  | otherwise     = replicate (n - length s) '0' ++ s
-
--- | Pad a string on the right with spaces to length n.
-padRight :: Int -> String -> String
-padRight n s
-  | length s >= n = s
-  | otherwise     = s ++ replicate (n - length s) ' '
