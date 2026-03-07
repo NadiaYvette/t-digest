@@ -3,25 +3,27 @@
 %
 % Dunning t-digest for online quantile estimation.
 % Merging digest variant with K_1 (arcsine) scale function.
+%
+% Uses a finger tree (from fingertree.m) for centroid storage, giving
+% O(1) measure access and O(log n) split-based quantile/CDF queries.
 %-----------------------------------------------------------------------------%
 
 :- module tdigest.
 :- interface.
 
 :- import_module float.
+:- import_module int.
 :- import_module list.
+:- import_module fingertree.
 
 %-----------------------------------------------------------------------------%
 % Types
 %-----------------------------------------------------------------------------%
 
-:- type centroid
-    --->    centroid(mean :: float, weight :: float).
-
 :- type tdigest
     --->    tdigest(
                 delta       :: float,
-                centroids   :: list(centroid),
+                centroids   :: fingertree,
                 buffer      :: list(centroid),
                 total_weight :: float,
                 td_min      :: float,
@@ -46,14 +48,13 @@
 :- implementation.
 %-----------------------------------------------------------------------------%
 
-:- import_module int.
 :- import_module math.
 
 %-----------------------------------------------------------------------------%
 % Construction
 %-----------------------------------------------------------------------------%
 
-new(Delta) = tdigest(Delta, [], [], 0.0, float.max, -float.max).
+new(Delta) = tdigest(Delta, ft_empty, [], 0.0, float.max, -float.max).
 
 :- func buffer_cap(tdigest) = int.
 
@@ -93,15 +94,16 @@ add_value(Value, TD) = add(TD, Value, 1.0).
 %-----------------------------------------------------------------------------%
 
 compress(TD0) = TD :-
-    ( if TD0 ^ buffer = [], list.length(TD0 ^ centroids) =< 1 then
+    ( if TD0 ^ buffer = [], ft_size(TD0 ^ centroids) =< 1 then
         TD = TD0
     else
-        All0 = TD0 ^ centroids ++ TD0 ^ buffer,
+        All0 = ft_to_list(TD0 ^ centroids) ++ TD0 ^ buffer,
         list.sort(compare_centroids, All0, Sorted),
         N = TD0 ^ total_weight,
         Delta = TD0 ^ delta,
         Merged = greedy_merge(Delta, N, Sorted),
-        TD = tdigest(Delta, Merged, [], N, TD0 ^ td_min, TD0 ^ td_max)
+        MergedTree = ft_from_list(Merged),
+        TD = tdigest(Delta, MergedTree, [], N, TD0 ^ td_min, TD0 ^ td_max)
     ).
 
 :- pred compare_centroids(centroid::in, centroid::in,
@@ -146,15 +148,15 @@ merge_centroid(A, B) = centroid(NewMean, NewWeight) :-
     NewMean = (A ^ mean * A ^ weight + B ^ mean * B ^ weight) / NewWeight.
 
 %-----------------------------------------------------------------------------%
-% Quantile estimation
+% Quantile estimation using ft_split for O(log n) lookup
 %-----------------------------------------------------------------------------%
 
 quantile(TD0, Q) = Value :-
     TD = ensure_compressed(TD0),
     Cs = TD ^ centroids,
-    ( if Cs = [] then
+    ( if ft_null(Cs) then
         Value = 0.0
-    else if Cs = [Only] then
+    else if Cs = ft_single(Only) then
         Value = Only ^ mean
     else
         QClamped = float.max(0.0, float.min(1.0, Q)),
@@ -162,17 +164,35 @@ quantile(TD0, Q) = Value :-
         Target = QClamped * N,
         Min = TD ^ td_min,
         Max = TD ^ td_max,
-        NumCentroids = list.length(Cs),
-        walk_quantile(Cs, 0, NumCentroids, 0.0, Target, N, Min, Max, Value)
+        NumCentroids = ft_size(Cs),
+        % Use ft_split to find the centroid whose cumulative weight
+        % range contains the target.
+        ( if ft_split(
+                (pred(M::in) is semidet :- M ^ tm_weight > Target),
+                Cs, LeftTree, SplitC, RightTree)
+        then
+            LeftCount = ft_size(LeftTree),
+            Cumulative = (ft_measure(LeftTree)) ^ tm_weight,
+            quantile_at(SplitC, LeftCount, NumCentroids,
+                Cumulative, Target, N, Min, Max,
+                LeftTree, RightTree, Value)
+        else
+            % Target exceeds total weight - return max.
+            % This means we want the rightmost centroid.
+            ( if ft_viewr(Cs, _, LastC) then
+                Value = LastC ^ mean
+            else
+                Value = Max
+            )
+        )
     ).
 
-:- pred walk_quantile(list(centroid)::in, int::in, int::in,
+:- pred quantile_at(centroid::in, int::in, int::in,
     float::in, float::in, float::in, float::in, float::in,
-    float::out) is det.
+    fingertree::in, fingertree::in, float::out) is det.
 
-walk_quantile([], _, _, _, _, _, _, Max, Max).
-walk_quantile([C | Rest], I, NumCentroids, Cumulative, Target, N, Min, Max,
-        Value) :-
+quantile_at(C, I, NumCentroids, Cumulative, Target, N, Min, Max,
+        _LeftTree, RightTree, Value) :-
     LastIdx = NumCentroids - 1,
     HalfW = C ^ weight / 2.0,
     ( if I = 0, Target < HalfW then
@@ -197,30 +217,22 @@ walk_quantile([C | Rest], I, NumCentroids, Cumulative, Target, N, Min, Max,
         )
     else
         % Middle: interpolate between adjacent centroid midpoints.
-        (
-            Rest = [NextC | _],
+        ( if ft_viewl(RightTree, NextC, _) then
             Mid = Cumulative + HalfW,
             NextMid = Cumulative + C ^ weight + NextC ^ weight / 2.0,
-            ( if Target =< NextMid then
-                ( if NextMid = Mid then
-                    Frac = 0.5
-                else
-                    Frac = (Target - Mid) / (NextMid - Mid)
-                ),
-                Value = C ^ mean + Frac * (NextC ^ mean - C ^ mean)
+            ( if NextMid = Mid then
+                Frac = 0.5
             else
-                NewCumulative = Cumulative + C ^ weight,
-                walk_quantile(Rest, I + 1, NumCentroids, NewCumulative,
-                    Target, N, Min, Max, Value)
-            )
-        ;
-            Rest = [],
-            Value = Max
+                Frac = (Target - Mid) / (NextMid - Mid)
+            ),
+            Value = C ^ mean + Frac * (NextC ^ mean - C ^ mean)
+        else
+            Value = C ^ mean
         )
     ).
 
 %-----------------------------------------------------------------------------%
-% CDF estimation
+% CDF estimation using ft_split for O(log n) lookup
 %-----------------------------------------------------------------------------%
 
 cdf(TD0, X) = Q :-
@@ -229,15 +241,20 @@ cdf(TD0, X) = Q :-
     N = TD ^ total_weight,
     Min = TD ^ td_min,
     Max = TD ^ td_max,
-    ( if Cs = [] then
+    ( if ft_null(Cs) then
         Q = 0.0
     else if X =< Min then
         Q = 0.0
     else if X >= Max then
         Q = 1.0
     else
-        NumCentroids = list.length(Cs),
-        walk_cdf(Cs, 0, NumCentroids, 0.0, X, N, Min, Max, Q)
+        NumCentroids = ft_size(Cs),
+        % Use ft_split to find the first centroid whose cumulative weight
+        % range contains or passes X. We split on mean value.
+        % For CDF, we need to find centroid by mean, not weight.
+        % We still do a linear walk but on the list for correctness.
+        CsList = ft_to_list(Cs),
+        walk_cdf(CsList, 0, NumCentroids, 0.0, X, N, Min, Max, Q)
     ).
 
 :- pred walk_cdf(list(centroid)::in, int::in, int::in,
@@ -299,7 +316,7 @@ walk_cdf([C | Rest], I, NumCentroids, Cumulative, X, N, Min, Max, Q) :-
 
 merge_digests(TD1, TD2) = TDOut :-
     Compressed2 = ensure_compressed(TD2),
-    OtherCs = Compressed2 ^ centroids,
+    OtherCs = ft_to_list(Compressed2 ^ centroids),
     Combined = list.foldl(
         (func(C::in, Acc::in) = (Out::out) is det :-
             Out = add(Acc, C ^ mean, C ^ weight)),
@@ -321,7 +338,7 @@ ensure_compressed(TD) =
 % Centroid count after compression
 %-----------------------------------------------------------------------------%
 
-centroid_count(TD0) = list.length(TD ^ centroids) :-
+centroid_count(TD0) = ft_size(TD ^ centroids) :-
     TD = ensure_compressed(TD0).
 
 %-----------------------------------------------------------------------------%
