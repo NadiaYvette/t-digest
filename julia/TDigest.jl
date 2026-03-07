@@ -1,9 +1,13 @@
 """
 Dunning t-digest for online quantile estimation.
 Merging digest variant with K_1 (arcsine) scale function.
+Uses an array-backed 2-3-4 tree with monoidal measures.
 Pure Julia -- no external packages.
 """
 module TDigestModule
+
+include("Tree234.jl")
+using .Tree234Module
 
 export TDigest, add!, compress!, quantile, cdf, merge!, centroid_count
 
@@ -12,12 +16,38 @@ struct Centroid
     weight::Float64
 end
 
+struct TdMeasure
+    weight::Float64
+    count::Int
+    max_mean::Float64
+    mean_weight_sum::Float64
+end
+
 const DEFAULT_DELTA = 100.0
 const BUFFER_FACTOR = 5
 
+# Trait functions for Tree234
+function _td_measure(c::Centroid)::TdMeasure
+    TdMeasure(c.weight, 1, c.mean, c.mean * c.weight)
+end
+
+function _td_combine(a::TdMeasure, b::TdMeasure)::TdMeasure
+    TdMeasure(a.weight + b.weight, a.count + b.count,
+              max(a.max_mean, b.max_mean),
+              a.mean_weight_sum + b.mean_weight_sum)
+end
+
+function _td_identity()::TdMeasure
+    TdMeasure(0.0, 0, -Inf, 0.0)
+end
+
+function _td_compare(a::Centroid, b::Centroid)::Int
+    a.mean < b.mean ? -1 : (a.mean > b.mean ? 1 : 0)
+end
+
 mutable struct TDigest
     delta::Float64
-    centroids::Vector{Centroid}
+    tree::Tree234{Centroid,TdMeasure}
     buffer::Vector{Centroid}
     total_weight::Float64
     min::Float64
@@ -25,7 +55,9 @@ mutable struct TDigest
     buffer_cap::Int
 
     function TDigest(delta::Real = DEFAULT_DELTA)
-        new(Float64(delta), Centroid[], Centroid[], 0.0, Inf, -Inf,
+        t = Tree234{Centroid,TdMeasure}(_td_measure, _td_combine,
+                                         _td_identity, _td_compare)
+        new(Float64(delta), t, Centroid[], 0.0, Inf, -Inf,
             ceil(Int, Float64(delta) * BUFFER_FACTOR))
     end
 end
@@ -63,11 +95,13 @@ function add!(td::TDigest, value::Real, weight::Real = 1.0)
 end
 
 function compress!(td::TDigest)
-    if isempty(td.buffer) && length(td.centroids) <= 1
+    if isempty(td.buffer) && length(td.tree) <= 1
         return td
     end
 
-    all = vcat(td.centroids, td.buffer)
+    # Collect all centroids from tree and buffer
+    all = collect_keys(td.tree)
+    append!(all, td.buffer)
     empty!(td.buffer)
     sort!(all; by = c -> c.mean)
 
@@ -90,7 +124,8 @@ function compress!(td::TDigest)
         end
     end
 
-    td.centroids = new_centroids
+    # Rebuild tree from sorted merged centroids
+    build_from_sorted!(td.tree, new_centroids)
     td
 end
 
@@ -100,52 +135,93 @@ function quantile(td::TDigest, q::Float64)
     if !isempty(td.buffer)
         compress!(td)
     end
-    if isempty(td.centroids)
+    sz = length(td.tree)
+    if sz == 0
         return nothing
     end
-    if length(td.centroids) == 1
-        return td.centroids[1].mean
+
+    centroids = collect_keys(td.tree)
+
+    if sz == 1
+        return centroids[1].mean
     end
 
     q = clamp(q, 0.0, 1.0)
     n = td.total_weight
     target = q * n
-    cumulative = 0.0
-    nc = length(td.centroids)
+    nc = length(centroids)
 
-    for i in 1:nc
-        c = td.centroids[i]
-        mid = cumulative + c.weight / 2.0
+    # Build prefix sums
+    cum = Vector{Float64}(undef, nc)
+    cum[1] = centroids[1].weight
+    for i in 2:nc
+        cum[i] = cum[i - 1] + centroids[i].weight
+    end
 
-        if i == 1
-            if target < c.weight / 2.0
-                if c.weight == 1
-                    return td.min
-                end
-                return td.min + (c.mean - td.min) * (target / (c.weight / 2.0))
-            end
+    # Handle first centroid edge case
+    first_c = centroids[1]
+    if target < first_c.weight / 2.0
+        if first_c.weight == 1.0
+            return td.min
         end
+        return td.min + (first_c.mean - td.min) * (target / (first_c.weight / 2.0))
+    end
 
-        if i == nc
-            if target > n - c.weight / 2.0
-                if c.weight == 1
-                    return td.max
-                end
-                remaining = n - c.weight / 2.0
-                return c.mean + (td.max - c.mean) * ((target - remaining) / (c.weight / 2.0))
-            end
-            return c.mean
+    # Handle last centroid edge case
+    last_c = centroids[nc]
+    if target > n - last_c.weight / 2.0
+        if last_c.weight == 1.0
+            return td.max
         end
+        remaining = n - last_c.weight / 2.0
+        return last_c.mean + (td.max - last_c.mean) * ((target - remaining) / (last_c.weight / 2.0))
+    end
 
-        next_c = td.centroids[i + 1]
-        next_mid = cumulative + c.weight + next_c.weight / 2.0
-
-        if target <= next_mid
-            frac = next_mid == mid ? 0.5 : (target - mid) / (next_mid - mid)
-            return c.mean + frac * (next_c.mean - c.mean)
+    # Binary search for position
+    lo_idx = 1
+    hi_idx = nc
+    while lo_idx < hi_idx
+        mid_idx = div(lo_idx + hi_idx, 2)
+        if cum[mid_idx] < target
+            lo_idx = mid_idx + 1
+        else
+            hi_idx = mid_idx
         end
+    end
+    idx = lo_idx
 
-        cumulative += c.weight
+    if idx >= nc
+        idx = nc - 1
+    end
+    if idx < 1
+        idx = 1
+    end
+
+    cumulative = idx > 1 ? cum[idx - 1] : 0.0
+    c = centroids[idx]
+    mid_val = cumulative + c.weight / 2.0
+
+    if idx > 1 && target < mid_val
+        idx -= 1
+        cumulative = idx > 1 ? cum[idx - 1] : 0.0
+        c2 = centroids[idx]
+        mid2 = cumulative + c2.weight / 2.0
+        next_c = centroids[idx + 1]
+        next_mid = cumulative + c2.weight + next_c.weight / 2.0
+        frac = next_mid == mid2 ? 0.5 : (target - mid2) / (next_mid - mid2)
+        return c2.mean + frac * (next_c.mean - c2.mean)
+    end
+
+    if idx == nc
+        return c.mean
+    end
+
+    next_c = centroids[idx + 1]
+    next_mid = cumulative + c.weight + next_c.weight / 2.0
+
+    if target <= next_mid
+        frac = next_mid == mid_val ? 0.5 : (target - mid_val) / (next_mid - mid_val)
+        return c.mean + frac * (next_c.mean - c.mean)
     end
 
     td.max
@@ -156,7 +232,8 @@ function cdf(td::TDigest, x::Real)
     if !isempty(td.buffer)
         compress!(td)
     end
-    if isempty(td.centroids)
+    sz = length(td.tree)
+    if sz == 0
         return nothing
     end
     if x <= td.min
@@ -166,58 +243,80 @@ function cdf(td::TDigest, x::Real)
         return 1.0
     end
 
+    centroids = collect_keys(td.tree)
+    nc = length(centroids)
     n = td.total_weight
-    cumulative = 0.0
-    nc = length(td.centroids)
 
-    for i in 1:nc
-        c = td.centroids[i]
-
-        if i == 1
-            if x < c.mean
-                inner_w = c.weight / 2.0
-                frac = c.mean == td.min ? 1.0 : (x - td.min) / (c.mean - td.min)
-                return (inner_w * frac) / n
-            elseif x == c.mean
-                return (c.weight / 2.0) / n
-            end
-        end
-
-        if i == nc
-            if x > c.mean
-                inner_w = c.weight / 2.0
-                right_w = n - cumulative - c.weight / 2.0
-                frac = td.max == c.mean ? 0.0 : (x - c.mean) / (td.max - c.mean)
-                return (cumulative + c.weight / 2.0 + right_w * frac) / n
-            else
-                return (cumulative + c.weight / 2.0) / n
-            end
-        end
-
-        next_c = td.centroids[i + 1]
-        next_cumulative = cumulative + c.weight
-        mid_val = cumulative + c.weight / 2.0
-        next_mid = next_cumulative + next_c.weight / 2.0
-
-        if x < next_c.mean
-            if c.mean == next_c.mean
-                return (mid_val + (next_mid - mid_val) / 2.0) / n
-            end
-            frac = (x - c.mean) / (next_c.mean - c.mean)
-            return (mid_val + frac * (next_mid - mid_val)) / n
-        end
-
-        cumulative += c.weight
+    # Build prefix sums
+    cum = Vector{Float64}(undef, nc)
+    cum[1] = centroids[1].weight
+    for i in 2:nc
+        cum[i] = cum[i - 1] + centroids[i].weight
     end
 
-    1.0
+    # Binary search for position: find first centroid with mean >= x
+    means = [c.mean for c in centroids]
+    pos = searchsortedfirst(means, x)
+
+    # x is less than the first centroid's mean
+    if pos == 1
+        c = centroids[1]
+        if x < c.mean
+            inner_w = c.weight / 2.0
+            frac = c.mean == td.min ? 1.0 : (x - td.min) / (c.mean - td.min)
+            return (inner_w * frac) / n
+        end
+        return (c.weight / 2.0) / n
+    end
+
+    # x >= all centroid means
+    if pos > nc
+        c = centroids[nc]
+        cumulative = nc > 1 ? cum[nc - 1] : 0.0
+        if x > c.mean
+            right_w = n - cumulative - c.weight / 2.0
+            frac = td.max == c.mean ? 0.0 : (x - c.mean) / (td.max - c.mean)
+            return (cumulative + c.weight / 2.0 + right_w * frac) / n
+        end
+        return (cumulative + c.weight / 2.0) / n
+    end
+
+    # x is between centroids[pos-1].mean and centroids[pos].mean
+    i = pos - 1
+    c = centroids[i]
+    next_c = centroids[pos]
+
+    cumulative = i > 1 ? cum[i - 1] : 0.0
+    mid_cdf = cumulative + c.weight / 2.0
+    next_cumulative = cumulative + c.weight
+    next_mid = next_cumulative + next_c.weight / 2.0
+
+    if i == nc
+        if x > c.mean
+            right_w = n - cumulative - c.weight / 2.0
+            frac = td.max == c.mean ? 0.0 : (x - c.mean) / (td.max - c.mean)
+            return (cumulative + c.weight / 2.0 + right_w * frac) / n
+        end
+        return (cumulative + c.weight / 2.0) / n
+    end
+
+    if x < next_c.mean
+        if c.mean == next_c.mean
+            return (mid_cdf + (next_mid - mid_cdf) / 2.0) / n
+        end
+        frac = (x - c.mean) / (next_c.mean - c.mean)
+        return (mid_cdf + frac * (next_mid - mid_cdf)) / n
+    end
+
+    return next_mid / n
 end
 
 function merge!(td::TDigest, other::TDigest)
     if !isempty(other.buffer)
         compress!(other)
     end
-    for c in other.centroids
+    other_centroids = collect_keys(other.tree)
+    for c in other_centroids
         add!(td, c.mean, c.weight)
     end
     td
@@ -227,7 +326,7 @@ function centroid_count(td::TDigest)::Int
     if !isempty(td.buffer)
         compress!(td)
     end
-    length(td.centroids)
+    length(td.tree)
 end
 
 end # module

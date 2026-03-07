@@ -1,6 +1,9 @@
 # Dunning t-digest for online quantile estimation.
 # Merging digest variant with K_1 (arcsine) scale function.
+# Uses an array-backed 2-3-4 tree with monoidal measures.
 # Environment-based OOP implementation.
+
+source("tree234.R")
 
 DEFAULT_DELTA <- 100
 BUFFER_FACTOR <- 5
@@ -8,8 +11,7 @@ BUFFER_FACTOR <- 5
 tdigest_new <- function(delta = DEFAULT_DELTA) {
   self <- new.env(parent = emptyenv())
   self$delta <- as.double(delta)
-  self$centroids_mean <- numeric(0)
-  self$centroids_weight <- numeric(0)
+  self$tree <- tree234_new()
   self$buffer_mean <- numeric(0)
   self$buffer_weight <- numeric(0)
   self$total_weight <- 0.0
@@ -40,11 +42,26 @@ tdigest_add <- function(self, value, weight = 1.0) {
 
 tdigest_compress <- function(self) {
   nbuf <- length(self$buffer_mean)
-  ncent <- length(self$centroids_mean)
-  if (nbuf == 0 && ncent <= 1) return(invisible(self))
+  tree_size <- tree234_size(self$tree)
+  if (nbuf == 0 && tree_size <= 1) return(invisible(self))
 
-  all_mean <- c(self$centroids_mean, self$buffer_mean)
-  all_weight <- c(self$centroids_weight, self$buffer_weight)
+  # Collect all centroids from tree and buffer
+  tree_centroids <- tree234_collect(self$tree)
+  ntree <- length(tree_centroids)
+
+  # Build combined mean/weight vectors
+  all_mean <- numeric(ntree + nbuf)
+  all_weight <- numeric(ntree + nbuf)
+  if (ntree > 0) {
+    for (i in seq_len(ntree)) {
+      all_mean[i] <- tree_centroids[[i]]$mean
+      all_weight[i] <- tree_centroids[[i]]$weight
+    }
+  }
+  if (nbuf > 0) {
+    all_mean[(ntree + 1):(ntree + nbuf)] <- self$buffer_mean
+    all_weight[(ntree + 1):(ntree + nbuf)] <- self$buffer_weight
+  }
   self$buffer_mean <- numeric(0)
   self$buffer_weight <- numeric(0)
 
@@ -78,16 +95,37 @@ tdigest_compress <- function(self) {
     }
   }
 
-  self$centroids_mean <- new_mean
-  self$centroids_weight <- new_weight
+  # Build sorted centroid list and rebuild tree
+  merged_count <- length(new_mean)
+  sorted_centroids <- vector("list", merged_count)
+  for (i in seq_len(merged_count)) {
+    sorted_centroids[[i]] <- list(mean = new_mean[i], weight = new_weight[i])
+  }
+  tree234_build_from_sorted(self$tree, sorted_centroids)
+
   invisible(self)
+}
+
+# Helper: get centroids as mean/weight vectors from the tree
+tdigest_get_centroids <- function(self) {
+  centroids <- tree234_collect(self$tree)
+  n <- length(centroids)
+  if (n == 0) return(list(mean = numeric(0), weight = numeric(0)))
+  means <- numeric(n)
+  weights <- numeric(n)
+  for (i in seq_len(n)) {
+    means[i] <- centroids[[i]]$mean
+    weights[i] <- centroids[[i]]$weight
+  }
+  list(mean = means, weight = weights)
 }
 
 tdigest_quantile <- function(self, q) {
   if (length(self$buffer_mean) > 0) tdigest_compress(self)
-  count <- length(self$centroids_mean)
+  cdata <- tdigest_get_centroids(self)
+  count <- length(cdata$mean)
   if (count == 0) return(NA)
-  if (count == 1) return(self$centroids_mean[1])
+  if (count == 1) return(cdata$mean[1])
 
   if (q < 0.0) q <- 0.0
   if (q > 1.0) q <- 1.0
@@ -97,8 +135,8 @@ tdigest_quantile <- function(self, q) {
   cumulative <- 0.0
 
   for (i in 1:count) {
-    cmean <- self$centroids_mean[i]
-    cweight <- self$centroids_weight[i]
+    cmean <- cdata$mean[i]
+    cweight <- cdata$weight[i]
     mid <- cumulative + cweight / 2.0
 
     if (i == 1) {
@@ -117,8 +155,8 @@ tdigest_quantile <- function(self, q) {
       return(cmean)
     }
 
-    nmean <- self$centroids_mean[i + 1]
-    nweight <- self$centroids_weight[i + 1]
+    nmean <- cdata$mean[i + 1]
+    nweight <- cdata$weight[i + 1]
     next_mid <- cumulative + cweight + nweight / 2.0
 
     if (target <= next_mid) {
@@ -138,7 +176,8 @@ tdigest_quantile <- function(self, q) {
 
 tdigest_cdf <- function(self, x) {
   if (length(self$buffer_mean) > 0) tdigest_compress(self)
-  count <- length(self$centroids_mean)
+  cdata <- tdigest_get_centroids(self)
+  count <- length(cdata$mean)
   if (count == 0) return(NA)
   if (x <= self$min_val) return(0.0)
   if (x >= self$max_val) return(1.0)
@@ -147,8 +186,8 @@ tdigest_cdf <- function(self, x) {
   cumulative <- 0.0
 
   for (i in 1:count) {
-    cmean <- self$centroids_mean[i]
-    cweight <- self$centroids_weight[i]
+    cmean <- cdata$mean[i]
+    cweight <- cdata$weight[i]
 
     if (i == 1) {
       if (x < cmean) {
@@ -172,8 +211,8 @@ tdigest_cdf <- function(self, x) {
     }
 
     mid <- cumulative + cweight / 2.0
-    nmean <- self$centroids_mean[i + 1]
-    nweight <- self$centroids_weight[i + 1]
+    nmean <- cdata$mean[i + 1]
+    nweight <- cdata$weight[i + 1]
     next_cumulative <- cumulative + cweight
     next_mid <- next_cumulative + nweight / 2.0
 
@@ -193,17 +232,18 @@ tdigest_cdf <- function(self, x) {
 
 tdigest_merge <- function(self, other) {
   if (length(other$buffer_mean) > 0) tdigest_compress(other)
-  for (i in seq_along(other$centroids_mean)) {
-    tdigest_add(self, other$centroids_mean[i], other$centroids_weight[i])
+  other_centroids <- tree234_collect(other$tree)
+  for (i in seq_along(other_centroids)) {
+    tdigest_add(self, other_centroids[[i]]$mean, other_centroids[[i]]$weight)
   }
   invisible(self)
 }
 
 tdigest_size <- function(self) {
-  length(self$centroids_mean) + length(self$buffer_mean)
+  tree234_size(self$tree) + length(self$buffer_mean)
 }
 
 tdigest_centroid_count <- function(self) {
   if (length(self$buffer_mean) > 0) tdigest_compress(self)
-  length(self$centroids_mean)
+  tree234_size(self$tree)
 }

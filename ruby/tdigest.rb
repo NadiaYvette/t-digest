@@ -3,18 +3,50 @@
 
 # Dunning t-digest for online quantile estimation.
 # Merging digest variant with K_1 (arcsine) scale function.
+# Uses an array-backed 2-3-4 tree with four-component monoidal measures.
+
+require_relative 'tree234'
 
 class TDigest
   Centroid = Struct.new(:mean, :weight)
+
+  # Measure: {weight, count, max_mean, mean_weight_sum}
+  Measure = Struct.new(:weight, :count, :max_mean, :mean_weight_sum)
 
   DEFAULT_DELTA = 100
   BUFFER_FACTOR = 5
 
   attr_reader :delta, :total_weight, :min, :max
 
+  MEASURE_FN = ->(c) {
+    Measure.new(c.weight, 1, c.mean, c.mean * c.weight)
+  }
+
+  COMBINE_FN = ->(a, b) {
+    Measure.new(
+      a.weight + b.weight,
+      a.count + b.count,
+      [a.max_mean, b.max_mean].max,
+      a.mean_weight_sum + b.mean_weight_sum
+    )
+  }
+
+  IDENTITY_FN = -> {
+    Measure.new(0, 0, -Float::INFINITY, 0)
+  }
+
+  COMPARE_FN = ->(a, b) {
+    a.mean <=> b.mean
+  }
+
   def initialize(delta = DEFAULT_DELTA)
     @delta = delta.to_f
-    @centroids = []
+    @tree = Tree234.new(
+      measure_fn:  MEASURE_FN,
+      combine_fn:  COMBINE_FN,
+      identity_fn: IDENTITY_FN,
+      compare_fn:  COMPARE_FN
+    )
     @buffer = []
     @total_weight = 0.0
     @min = Float::INFINITY
@@ -34,39 +66,40 @@ class TDigest
   end
 
   def compress!
-    return if @buffer.empty? && @centroids.size <= 1
+    return if @buffer.empty? && @tree.size <= 1
 
-    all = @centroids + @buffer
+    # Collect all centroids from tree and buffer
+    all = @tree.collect + @buffer
     @buffer = []
     all.sort_by!(&:mean)
 
-    new_centroids = [Centroid.new(all[0].mean, all[0].weight)]
+    merged = [Centroid.new(all[0].mean, all[0].weight)]
     weight_so_far = 0.0
     n = @total_weight
 
     (1...all.size).each do |i|
-      proposed = new_centroids.last.weight + all[i].weight
+      proposed = merged.last.weight + all[i].weight
       q0 = weight_so_far / n
       q1 = (weight_so_far + proposed) / n
 
-      if proposed <= 1 && all.size > 1
-        merge_into_last!(new_centroids, all[i])
-      elsif k(q1) - k(q0) <= 1.0
-        merge_into_last!(new_centroids, all[i])
+      if (proposed <= 1 && all.size > 1) || (k(q1) - k(q0) <= 1.0)
+        merge_into_last!(merged, all[i])
       else
-        weight_so_far += new_centroids.last.weight
-        new_centroids << Centroid.new(all[i].mean, all[i].weight)
+        weight_so_far += merged.last.weight
+        merged << Centroid.new(all[i].mean, all[i].weight)
       end
     end
 
-    @centroids = new_centroids
+    # Rebuild tree from sorted merged centroids
+    @tree.build_from_sorted(merged)
     self
   end
 
   def quantile(q)
     compress! unless @buffer.empty?
-    return nil if @centroids.empty?
-    return @centroids[0].mean if @centroids.size == 1
+    centroids = @tree.collect
+    return nil if centroids.empty?
+    return centroids[0].mean if centroids.size == 1
 
     q = 0.0 if q < 0.0
     q = 1.0 if q > 1.0
@@ -76,7 +109,7 @@ class TDigest
 
     # Walk centroids; each centroid midpoint is at cumulative + weight/2
     cumulative = 0.0
-    @centroids.each_with_index do |c, i|
+    centroids.each_with_index do |c, i|
       mid = cumulative + c.weight / 2.0
 
       if i == 0
@@ -87,7 +120,7 @@ class TDigest
         end
       end
 
-      if i == @centroids.size - 1
+      if i == centroids.size - 1
         # Right boundary: interpolate between last centroid and max
         if target > n - c.weight / 2.0
           return @max if c.weight == 1
@@ -97,7 +130,7 @@ class TDigest
         return c.mean
       end
 
-      next_c = @centroids[i + 1]
+      next_c = centroids[i + 1]
       next_mid = cumulative + c.weight + next_c.weight / 2.0
 
       if target <= next_mid
@@ -117,14 +150,15 @@ class TDigest
 
   def cdf(x)
     compress! unless @buffer.empty?
-    return nil if @centroids.empty?
+    centroids = @tree.collect
+    return nil if centroids.empty?
     return 0.0 if x <= @min
     return 1.0 if x >= @max
 
     n = @total_weight
     cumulative = 0.0
 
-    @centroids.each_with_index do |c, i|
+    centroids.each_with_index do |c, i|
       if i == 0
         # Left boundary: between min and first centroid
         if x < c.mean
@@ -136,7 +170,7 @@ class TDigest
         end
       end
 
-      if i == @centroids.size - 1
+      if i == centroids.size - 1
         # Right boundary
         if x > c.mean
           inner_w = c.weight / 2.0
@@ -149,7 +183,7 @@ class TDigest
       end
 
       mid = cumulative + c.weight / 2.0
-      next_c = @centroids[i + 1]
+      next_c = centroids[i + 1]
       next_cumulative = cumulative + c.weight
       next_mid = next_cumulative + next_c.weight / 2.0
 
@@ -175,19 +209,19 @@ class TDigest
   end
 
   def size
-    @centroids.size + @buffer.size
+    @tree.size + @buffer.size
   end
 
   def centroid_count
     compress! unless @buffer.empty?
-    @centroids.size
+    @tree.size
   end
 
   private
 
   def flush_for_merge
     compress! unless @buffer.empty?
-    @centroids
+    @tree.collect
   end
 
   def k(q)

@@ -3,9 +3,46 @@ import kotlin.math.*
 /**
  * Dunning t-digest for online quantile estimation.
  * Merging digest variant with K1 (arcsine) scale function.
+ * Uses an array-backed 2-3-4 tree with four-component monoidal measures.
  */
 
 data class Centroid(var mean: Double, var weight: Double)
+
+/**
+ * Four-component monoidal measure cached per subtree:
+ *   weight        - total weight of all centroids in subtree
+ *   count         - number of centroids in subtree
+ *   maxMean       - maximum mean value in subtree
+ *   meanWeightSum - sum of (mean * weight) for all centroids in subtree
+ */
+data class TdMeasure(
+    val weight: Double,
+    val count: Int,
+    val maxMean: Double,
+    val meanWeightSum: Double
+)
+
+/**
+ * TreeTraits implementation that maps Centroid keys to TdMeasure annotations.
+ */
+object CentroidTraits : Tree234.TreeTraits<Centroid, TdMeasure> {
+    override fun measure(key: Centroid): TdMeasure =
+        TdMeasure(key.weight, 1, key.mean, key.mean * key.weight)
+
+    override fun combine(a: TdMeasure, b: TdMeasure): TdMeasure =
+        TdMeasure(
+            a.weight + b.weight,
+            a.count + b.count,
+            maxOf(a.maxMean, b.maxMean),
+            a.meanWeightSum + b.meanWeightSum
+        )
+
+    override fun identity(): TdMeasure =
+        TdMeasure(0.0, 0, Double.NEGATIVE_INFINITY, 0.0)
+
+    override fun compare(a: Centroid, b: Centroid): Int =
+        a.mean.compareTo(b.mean)
+}
 
 class TDigest(val delta: Double = DEFAULT_DELTA) {
 
@@ -14,7 +51,7 @@ class TDigest(val delta: Double = DEFAULT_DELTA) {
         const val BUFFER_FACTOR = 5
     }
 
-    private var centroids = mutableListOf<Centroid>()
+    private val tree = Tree234<Centroid, TdMeasure>(CentroidTraits)
     private var buffer = mutableListOf<Centroid>()
     var totalWeight: Double = 0.0
         private set
@@ -33,40 +70,43 @@ class TDigest(val delta: Double = DEFAULT_DELTA) {
     }
 
     fun compress() {
-        if (buffer.isEmpty() && centroids.size <= 1) return
+        if (buffer.isEmpty() && tree.size <= 1) return
 
         val all = mutableListOf<Centroid>().apply {
-            addAll(centroids)
+            addAll(tree.collect())
             addAll(buffer)
         }
         buffer = mutableListOf()
         all.sortBy { it.mean }
 
-        val newCentroids = mutableListOf(Centroid(all[0].mean, all[0].weight))
+        val merged = mutableListOf(Centroid(all[0].mean, all[0].weight))
         var weightSoFar = 0.0
         val n = totalWeight
 
         for (i in 1 until all.size) {
-            val last = newCentroids.last()
+            val last = merged.last()
             val proposed = last.weight + all[i].weight
             val q0 = weightSoFar / n
             val q1 = (weightSoFar + proposed) / n
 
             if (proposed <= 1.0 && all.size > 1) {
-                mergeIntoLast(newCentroids, all[i])
+                mergeIntoLast(merged, all[i])
             } else if (k(q1) - k(q0) <= 1.0) {
-                mergeIntoLast(newCentroids, all[i])
+                mergeIntoLast(merged, all[i])
             } else {
                 weightSoFar += last.weight
-                newCentroids.add(Centroid(all[i].mean, all[i].weight))
+                merged.add(Centroid(all[i].mean, all[i].weight))
             }
         }
 
-        centroids = newCentroids
+        // Rebuild tree from sorted merged centroids
+        tree.buildFromSorted(merged)
     }
 
     fun quantile(q: Double): Double {
         if (buffer.isNotEmpty()) compress()
+
+        val centroids = tree.collect()
         if (centroids.isEmpty()) return Double.NaN
         if (centroids.size == 1) return centroids[0].mean
 
@@ -111,6 +151,8 @@ class TDigest(val delta: Double = DEFAULT_DELTA) {
 
     fun cdf(x: Double): Double {
         if (buffer.isNotEmpty()) compress()
+
+        val centroids = tree.collect()
         if (centroids.isEmpty()) return Double.NaN
         if (x <= min) return 0.0
         if (x >= max) return 1.0
@@ -162,14 +204,14 @@ class TDigest(val delta: Double = DEFAULT_DELTA) {
 
     fun merge(other: TDigest) {
         other.compress()
-        for (c in other.centroids) {
+        for (c in other.tree.collect()) {
             add(c.mean, c.weight)
         }
     }
 
     fun centroidCount(): Int {
         if (buffer.isNotEmpty()) compress()
-        return centroids.size
+        return tree.size
     }
 
     private fun k(q: Double): Double {

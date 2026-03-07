@@ -1,14 +1,50 @@
 // Dunning t-digest for online quantile estimation.
 // Merging digest variant with K_1 (arcsine) scale function.
+// Uses an array-backed 2-3-4 tree with monoidal measures.
 
 module tdigest;
 
 import std.math;
 import std.algorithm;
+import tree234;
 
 struct Centroid {
     double mean;
     double weight;
+}
+
+/// Four-component monoidal measure for the 2-3-4 tree.
+struct TdMeasure {
+    double weight = 0;
+    int count = 0;
+    double maxMean = -double.infinity;
+    double meanWeightSum = 0;
+}
+
+/// Traits for Tree234 parameterized on Centroid/TdMeasure.
+struct CentroidTraits {
+    static TdMeasure measure(const Centroid c) {
+        return TdMeasure(c.weight, 1, c.mean, c.mean * c.weight);
+    }
+
+    static TdMeasure combine(const TdMeasure a, const TdMeasure b) {
+        return TdMeasure(
+            a.weight + b.weight,
+            a.count + b.count,
+            fmax(a.maxMean, b.maxMean),
+            a.meanWeightSum + b.meanWeightSum
+        );
+    }
+
+    static TdMeasure identity() {
+        return TdMeasure(0, 0, -double.infinity, 0);
+    }
+
+    static int compare(const Centroid a, const Centroid b) {
+        if (a.mean < b.mean) return -1;
+        if (a.mean > b.mean) return 1;
+        return 0;
+    }
 }
 
 enum DEFAULT_DELTA = 100.0;
@@ -16,7 +52,7 @@ private enum BUFFER_FACTOR = 5;
 
 struct TDigest {
     double delta;
-    private Centroid[] centroids;
+    private Tree234!(Centroid, TdMeasure, CentroidTraits) tree;
     private Centroid[] buffer;
     double totalWeight = 0.0;
     double minVal = double.infinity;
@@ -35,36 +71,43 @@ struct TDigest {
     }
 
     void compress() {
-        if (buffer.length == 0 && centroids.length <= 1)
+        if (buffer.length == 0 && tree.size() <= 1)
             return;
 
-        auto all = centroids ~ buffer;
+        // Collect all centroids from tree and buffer
+        Centroid[] all;
+        all.reserve(tree.size() + buffer.length);
+        auto treeCentroids = tree.collect();
+        all ~= treeCentroids;
+        all ~= buffer;
         buffer.length = 0;
+
         all.sort!((a, b) => a.mean < b.mean);
 
-        Centroid[] newCentroids;
-        newCentroids.reserve(all.length);
-        newCentroids ~= Centroid(all[0].mean, all[0].weight);
+        Centroid[] merged;
+        merged.reserve(all.length);
+        merged ~= Centroid(all[0].mean, all[0].weight);
         double weightSoFar = 0.0;
         double n = totalWeight;
 
         foreach (i; 1 .. all.length) {
-            double proposed = newCentroids[$ - 1].weight + all[i].weight;
+            double proposed = merged[$ - 1].weight + all[i].weight;
             double q0 = weightSoFar / n;
             double q1 = (weightSoFar + proposed) / n;
 
             if ((proposed <= 1.0 && all.length > 1) || (k(q1) - k(q0) <= 1.0)) {
-                double newWeight = newCentroids[$ - 1].weight + all[i].weight;
-                newCentroids[$ - 1].mean = (newCentroids[$ - 1].mean * newCentroids[$ - 1].weight +
+                double newWeight = merged[$ - 1].weight + all[i].weight;
+                merged[$ - 1].mean = (merged[$ - 1].mean * merged[$ - 1].weight +
                     all[i].mean * all[i].weight) / newWeight;
-                newCentroids[$ - 1].weight = newWeight;
+                merged[$ - 1].weight = newWeight;
             } else {
-                weightSoFar += newCentroids[$ - 1].weight;
-                newCentroids ~= Centroid(all[i].mean, all[i].weight);
+                weightSoFar += merged[$ - 1].weight;
+                merged ~= Centroid(all[i].mean, all[i].weight);
             }
         }
 
-        centroids = newCentroids;
+        // Rebuild tree from sorted merged centroids
+        tree.buildFromSorted(merged);
     }
 
     void add(double value, double weight = 1.0) {
@@ -78,6 +121,8 @@ struct TDigest {
 
     double quantile(double q) {
         if (buffer.length > 0) compress();
+
+        auto centroids = tree.collect();
         if (centroids.length == 0) return double.nan;
         if (centroids.length == 1) return centroids[0].mean;
 
@@ -124,6 +169,8 @@ struct TDigest {
 
     double cdf(double x) {
         if (buffer.length > 0) compress();
+
+        auto centroids = tree.collect();
         if (centroids.length == 0) return double.nan;
         if (x <= minVal) return 0.0;
         if (x >= maxVal) return 1.0;
@@ -173,13 +220,14 @@ struct TDigest {
 
     void merge(ref TDigest other) {
         if (other.buffer.length > 0) other.compress();
-        foreach (c; other.centroids) {
+        auto otherCentroids = other.tree.collect();
+        foreach (c; otherCentroids) {
             add(c.mean, c.weight);
         }
     }
 
     size_t centroidCount() {
         if (buffer.length > 0) compress();
-        return centroids.length;
+        return cast(size_t) tree.size();
     }
 }

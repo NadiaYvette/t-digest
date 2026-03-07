@@ -1,4 +1,5 @@
 ;;;; tdigest.lisp -- Dunning t-digest (merging digest variant) with K1 scale function
+;;;; Uses an array-backed 2-3-4 tree with four-component monoidal measures.
 
 ;;; ---------------------------------------------------------------------------
 ;;; Centroid: a single cluster with a mean and weight
@@ -9,13 +10,56 @@
   (weight 0.0d0 :type double-float))
 
 ;;; ---------------------------------------------------------------------------
+;;; Measure / trait functions for tree234
+;;; ---------------------------------------------------------------------------
+
+(defun centroid-measure-fn (c)
+  "Compute the monoidal measure of a single centroid."
+  (tree234:make-tree234-measure
+   :weight (centroid-weight c)
+   :count 1
+   :max-mean (centroid-mean c)
+   :mean-weight-sum (* (centroid-mean c) (centroid-weight c))))
+
+(defun centroid-combine-fn (a b)
+  "Combine two measures monoidally."
+  (tree234:make-tree234-measure
+   :weight (+ (tree234:tree234-measure-weight a)
+              (tree234:tree234-measure-weight b))
+   :count (+ (tree234:tree234-measure-count a)
+             (tree234:tree234-measure-count b))
+   :max-mean (max (tree234:tree234-measure-max-mean a)
+                  (tree234:tree234-measure-max-mean b))
+   :mean-weight-sum (+ (tree234:tree234-measure-mean-weight-sum a)
+                       (tree234:tree234-measure-mean-weight-sum b))))
+
+(defun centroid-identity-fn ()
+  "Return the monoidal identity measure."
+  (tree234:make-tree234-measure
+   :weight 0.0d0
+   :count 0
+   :max-mean most-negative-double-float
+   :mean-weight-sum 0.0d0))
+
+(defun centroid-compare-fn (a b)
+  "Compare two centroids by mean. Returns <0, 0, or >0."
+  (let ((ma (centroid-mean a))
+        (mb (centroid-mean b)))
+    (cond ((< ma mb) -1)
+          ((> ma mb)  1)
+          (t          0))))
+
+;;; ---------------------------------------------------------------------------
 ;;; T-Digest structure
 ;;; ---------------------------------------------------------------------------
 
 (defstruct tdigest
   (delta        100.0d0       :type double-float)
-  (centroids    (make-array 0 :element-type 'centroid :adjustable t :fill-pointer 0)
-                              :type (vector centroid))
+  (tree         (tree234:make-tree234
+                 :measure-fn  #'centroid-measure-fn
+                 :combine-fn  #'centroid-combine-fn
+                 :identity-fn #'centroid-identity-fn
+                 :compare-fn  #'centroid-compare-fn))
   (buffer       (make-array 0 :element-type 'centroid :adjustable t :fill-pointer 0)
                               :type (vector centroid))
   (buffer-cap   500           :type fixnum)
@@ -84,21 +128,22 @@ buffer is full."
 
 (defun tdigest-compress (td)
   "Compress the t-digest TD by merging buffered values into the centroid list."
-  (let ((buf (tdigest-buffer td))
-        (cents (tdigest-centroids td)))
+  (let ((buf  (tdigest-buffer td))
+        (tree (tdigest-tree td)))
     (when (and (zerop (length buf))
-               (<= (length cents) 1))
+               (<= (tree234:tree234-size tree) 1))
       (return-from tdigest-compress td))
 
-    ;; Combine centroids and buffer into a single sorted vector
-    (let* ((total-count (+ (length cents) (length buf)))
+    ;; Collect all centroids from tree and buffer into a single sorted vector
+    (let* ((tree-cents (tree234:tree234-collect tree))
+           (total-count (+ (length tree-cents) (length buf)))
            (all (make-array total-count :element-type 'centroid)))
-      ;; Copy centroids
-      (loop for i below (length cents)
-            do (setf (aref all i) (aref cents i)))
+      ;; Copy tree centroids
+      (loop for i below (length tree-cents)
+            do (setf (aref all i) (aref tree-cents i)))
       ;; Copy buffer
       (loop for i below (length buf)
-            do (setf (aref all (+ (length cents) i)) (aref buf i)))
+            do (setf (aref all (+ (length tree-cents) i)) (aref buf i)))
       ;; Sort by mean
       (setf all (sort all #'centroid-mean<))
 
@@ -133,8 +178,17 @@ buffer is full."
                           (make-centroid :mean (centroid-mean item)
                                          :weight (centroid-weight item))
                           new-cents)))))
-        (setf (tdigest-centroids td) new-cents))))
+        ;; Rebuild tree from sorted merged centroids
+        (tree234:tree234-build-from-sorted tree new-cents))))
   td)
+
+;;; ---------------------------------------------------------------------------
+;;; Helper: collect centroids from tree as a simple-vector
+;;; ---------------------------------------------------------------------------
+
+(defun tdigest-centroids (td)
+  "Return the current centroids as a vector (after flushing buffer if needed)."
+  (tree234:tree234-collect (tdigest-tree td)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Quantile estimation
@@ -144,62 +198,64 @@ buffer is full."
   "Estimate the value at quantile Q (0..1) from the t-digest TD."
   (when (> (length (tdigest-buffer td)) 0)
     (tdigest-compress td))
-  (let ((cents (tdigest-centroids td)))
-    (when (zerop (length cents))
+  (let* ((tree (tdigest-tree td))
+         (sz   (tree234:tree234-size tree)))
+    (when (zerop sz)
       (return-from tdigest-quantile nil))
-    (when (= (length cents) 1)
-      (return-from tdigest-quantile (centroid-mean (aref cents 0))))
+    (let ((cents (tree234:tree234-collect tree)))
+      (when (= sz 1)
+        (return-from tdigest-quantile (centroid-mean (aref cents 0))))
 
-    ;; Clamp q
-    (setf q (max 0.0d0 (min 1.0d0 (coerce q 'double-float))))
+      ;; Clamp q
+      (setf q (max 0.0d0 (min 1.0d0 (coerce q 'double-float))))
 
-    (let* ((n (tdigest-total-weight td))
-           (target (* q n))
-           (num-cents (length cents))
-           (cumulative 0.0d0))
-      (loop for i below num-cents
-            for c = (aref cents i)
-            for mid = (+ cumulative (/ (centroid-weight c) 2.0d0))
-            do
-               ;; Left boundary: interpolate between min and first centroid
-               (when (and (= i 0) (< target (/ (centroid-weight c) 2.0d0)))
-                 (if (= (centroid-weight c) 1.0d0)
-                     (return-from tdigest-quantile (tdigest-min-val td))
-                     (return-from tdigest-quantile
-                       (+ (tdigest-min-val td)
-                          (* (- (centroid-mean c) (tdigest-min-val td))
-                             (/ target (/ (centroid-weight c) 2.0d0)))))))
+      (let* ((n (tdigest-total-weight td))
+             (target (* q n))
+             (num-cents (length cents))
+             (cumulative 0.0d0))
+        (loop for i below num-cents
+              for c = (aref cents i)
+              for mid = (+ cumulative (/ (centroid-weight c) 2.0d0))
+              do
+                 ;; Left boundary: interpolate between min and first centroid
+                 (when (and (= i 0) (< target (/ (centroid-weight c) 2.0d0)))
+                   (if (= (centroid-weight c) 1.0d0)
+                       (return-from tdigest-quantile (tdigest-min-val td))
+                       (return-from tdigest-quantile
+                         (+ (tdigest-min-val td)
+                            (* (- (centroid-mean c) (tdigest-min-val td))
+                               (/ target (/ (centroid-weight c) 2.0d0)))))))
 
-               ;; Right boundary: interpolate between last centroid and max
-               (when (= i (1- num-cents))
-                 (let ((right-start (- n (/ (centroid-weight c) 2.0d0))))
-                   (if (> target right-start)
-                       (if (= (centroid-weight c) 1.0d0)
-                           (return-from tdigest-quantile (tdigest-max-val td))
-                           (return-from tdigest-quantile
-                             (+ (centroid-mean c)
-                                (* (- (tdigest-max-val td) (centroid-mean c))
-                                   (/ (- target right-start)
-                                      (/ (centroid-weight c) 2.0d0))))))
-                       (return-from tdigest-quantile (centroid-mean c)))))
+                 ;; Right boundary: interpolate between last centroid and max
+                 (when (= i (1- num-cents))
+                   (let ((right-start (- n (/ (centroid-weight c) 2.0d0))))
+                     (if (> target right-start)
+                         (if (= (centroid-weight c) 1.0d0)
+                             (return-from tdigest-quantile (tdigest-max-val td))
+                             (return-from tdigest-quantile
+                               (+ (centroid-mean c)
+                                  (* (- (tdigest-max-val td) (centroid-mean c))
+                                     (/ (- target right-start)
+                                        (/ (centroid-weight c) 2.0d0))))))
+                         (return-from tdigest-quantile (centroid-mean c)))))
 
-               ;; Middle: interpolate between adjacent centroid midpoints
-               (let* ((next-c (aref cents (1+ i)))
-                      (next-mid (+ cumulative
-                                   (centroid-weight c)
-                                   (/ (centroid-weight next-c) 2.0d0))))
-                 (when (<= target next-mid)
-                   (let ((frac (if (= next-mid mid)
-                                   0.5d0
-                                   (/ (- target mid) (- next-mid mid)))))
-                     (return-from tdigest-quantile
-                       (+ (centroid-mean c)
-                          (* frac (- (centroid-mean next-c)
-                                     (centroid-mean c))))))))
+                 ;; Middle: interpolate between adjacent centroid midpoints
+                 (let* ((next-c (aref cents (1+ i)))
+                        (next-mid (+ cumulative
+                                     (centroid-weight c)
+                                     (/ (centroid-weight next-c) 2.0d0))))
+                   (when (<= target next-mid)
+                     (let ((frac (if (= next-mid mid)
+                                     0.5d0
+                                     (/ (- target mid) (- next-mid mid)))))
+                       (return-from tdigest-quantile
+                         (+ (centroid-mean c)
+                            (* frac (- (centroid-mean next-c)
+                                       (centroid-mean c))))))))
 
-               (incf cumulative (centroid-weight c)))
-      ;; Fallback
-      (tdigest-max-val td))))
+                 (incf cumulative (centroid-weight c)))
+        ;; Fallback
+        (tdigest-max-val td)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; CDF estimation (inverse of quantile)
@@ -209,8 +265,9 @@ buffer is full."
   "Estimate the cumulative distribution function at X for the t-digest TD."
   (when (> (length (tdigest-buffer td)) 0)
     (tdigest-compress td))
-  (let ((cents (tdigest-centroids td)))
-    (when (zerop (length cents))
+  (let* ((tree (tdigest-tree td))
+         (sz   (tree234:tree234-size tree)))
+    (when (zerop sz)
       (return-from tdigest-cdf nil))
 
     (let ((xd (coerce x 'double-float)))
@@ -219,7 +276,8 @@ buffer is full."
       (when (>= xd (tdigest-max-val td))
         (return-from tdigest-cdf 1.0d0))
 
-      (let* ((n (tdigest-total-weight td))
+      (let* ((cents (tree234:tree234-collect tree))
+             (n (tdigest-total-weight td))
              (num-cents (length cents))
              (cumulative 0.0d0))
         (loop for i below num-cents
@@ -286,8 +344,9 @@ buffer is full."
   (when (> (length (tdigest-buffer other)) 0)
     (tdigest-compress other))
   ;; Add all centroids from other as buffered values
-  (loop for c across (tdigest-centroids other)
-        do (tdigest-add td (centroid-mean c) (centroid-weight c)))
+  (let ((other-cents (tree234:tree234-collect (tdigest-tree other))))
+    (loop for c across other-cents
+          do (tdigest-add td (centroid-mean c) (centroid-weight c))))
   td)
 
 ;;; ---------------------------------------------------------------------------
@@ -298,4 +357,4 @@ buffer is full."
   "Return the number of centroids after compressing any buffered values."
   (when (> (length (tdigest-buffer td)) 0)
     (tdigest-compress td))
-  (length (tdigest-centroids td)))
+  (tree234:tree234-size (tdigest-tree td)))

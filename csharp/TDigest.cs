@@ -1,30 +1,80 @@
 // Dunning t-digest for online quantile estimation.
 // Merging digest variant with K1 (arcsine) scale function.
+// Uses an array-backed 2-3-4 tree with four-component monoidal measures.
 
 using System;
 using System.Collections.Generic;
 
 namespace TDigestLib
 {
-    public class TDigest
+    public struct Centroid
     {
-        private struct Centroid
-        {
-            public double Mean;
-            public double Weight;
+        public double Mean;
+        public double Weight;
 
-            public Centroid(double mean, double weight)
+        public Centroid(double mean, double weight)
+        {
+            Mean = mean;
+            Weight = weight;
+        }
+    }
+
+    public struct TdMeasure
+    {
+        public double Weight;
+        public int Count;
+        public double MaxMean;
+        public double MeanWeightSum;
+    }
+
+    public struct CentroidTraits : ITree234Traits<Centroid, TdMeasure>
+    {
+        public TdMeasure Measure(Centroid c)
+        {
+            return new TdMeasure
             {
-                Mean = mean;
-                Weight = weight;
-            }
+                Weight = c.Weight,
+                Count = 1,
+                MaxMean = c.Mean,
+                MeanWeightSum = c.Mean * c.Weight
+            };
         }
 
+        public TdMeasure Combine(TdMeasure a, TdMeasure b)
+        {
+            return new TdMeasure
+            {
+                Weight = a.Weight + b.Weight,
+                Count = a.Count + b.Count,
+                MaxMean = Math.Max(a.MaxMean, b.MaxMean),
+                MeanWeightSum = a.MeanWeightSum + b.MeanWeightSum
+            };
+        }
+
+        public TdMeasure Identity()
+        {
+            return new TdMeasure
+            {
+                Weight = 0,
+                Count = 0,
+                MaxMean = double.NegativeInfinity,
+                MeanWeightSum = 0
+            };
+        }
+
+        public int Compare(Centroid a, Centroid b)
+        {
+            return a.Mean.CompareTo(b.Mean);
+        }
+    }
+
+    public class TDigest
+    {
         private const double DefaultDelta = 100;
         private const int BufferFactor = 5;
 
         private readonly double _delta;
-        private List<Centroid> _centroids = new List<Centroid>();
+        private Tree234<Centroid, TdMeasure, CentroidTraits> _tree = new Tree234<Centroid, TdMeasure, CentroidTraits>();
         private List<Centroid> _buffer = new List<Centroid>();
         private double _totalWeight;
         private double _min = double.PositiveInfinity;
@@ -54,54 +104,69 @@ namespace TDigestLib
 
         public void Compress()
         {
-            if (_buffer.Count == 0 && _centroids.Count <= 1) return;
+            if (_buffer.Count == 0 && _tree.Size <= 1) return;
 
-            var all = new List<Centroid>(_centroids.Count + _buffer.Count);
-            all.AddRange(_centroids);
+            // Collect all centroids from tree and buffer
+            var all = new List<Centroid>();
+            _tree.Collect(all);
             all.AddRange(_buffer);
             _buffer.Clear();
+
             all.Sort((a, b) => a.Mean.CompareTo(b.Mean));
 
-            var newCentroids = new List<Centroid> { all[0] };
+            // Merge centroids according to K1 scale function
+            var merged = new List<Centroid> { all[0] };
             double weightSoFar = 0.0;
             double n = _totalWeight;
 
             for (int i = 1; i < all.Count; i++)
             {
-                double proposed = newCentroids[newCentroids.Count - 1].Weight + all[i].Weight;
+                double proposed = merged[merged.Count - 1].Weight + all[i].Weight;
                 double q0 = weightSoFar / n;
                 double q1 = (weightSoFar + proposed) / n;
 
                 if ((proposed <= 1 && all.Count > 1) || (K(q1) - K(q0) <= 1.0))
                 {
-                    MergeIntoLast(newCentroids, all[i]);
+                    MergeIntoLast(merged, all[i]);
                 }
                 else
                 {
-                    weightSoFar += newCentroids[newCentroids.Count - 1].Weight;
-                    newCentroids.Add(all[i]);
+                    weightSoFar += merged[merged.Count - 1].Weight;
+                    merged.Add(all[i]);
                 }
             }
 
-            _centroids = newCentroids;
+            // Rebuild tree from sorted merged centroids
+            _tree.BuildFromSorted(merged);
         }
 
         public double? Quantile(double q)
         {
             if (_buffer.Count > 0) Compress();
-            if (_centroids.Count == 0) return null;
-            if (_centroids.Count == 1) return _centroids[0].Mean;
+
+            if (_tree.Size == 0) return null;
+            if (_tree.Size == 1)
+            {
+                var single = new List<Centroid>();
+                _tree.Collect(single);
+                return single[0].Mean;
+            }
 
             if (q < 0.0) q = 0.0;
             if (q > 1.0) q = 1.0;
+
+            // Collect centroids for interpolation
+            var centroids = new List<Centroid>();
+            _tree.Collect(centroids);
+            int sz = centroids.Count;
 
             double n = _totalWeight;
             double target = q * n;
             double cumulative = 0.0;
 
-            for (int i = 0; i < _centroids.Count; i++)
+            for (int i = 0; i < sz; i++)
             {
-                var c = _centroids[i];
+                var c = centroids[i];
 
                 if (i == 0)
                 {
@@ -112,7 +177,7 @@ namespace TDigestLib
                     }
                 }
 
-                if (i == _centroids.Count - 1)
+                if (i == sz - 1)
                 {
                     if (target > n - c.Weight / 2.0)
                     {
@@ -124,7 +189,7 @@ namespace TDigestLib
                 }
 
                 double mid = cumulative + c.Weight / 2.0;
-                var nextC = _centroids[i + 1];
+                var nextC = centroids[i + 1];
                 double nextMid = cumulative + c.Weight + nextC.Weight / 2.0;
 
                 if (target <= nextMid)
@@ -142,16 +207,21 @@ namespace TDigestLib
         public double? Cdf(double x)
         {
             if (_buffer.Count > 0) Compress();
-            if (_centroids.Count == 0) return null;
+
+            if (_tree.Size == 0) return null;
             if (x <= _min) return 0.0;
             if (x >= _max) return 1.0;
 
+            // Collect centroids for interpolation
+            var centroids = new List<Centroid>();
+            _tree.Collect(centroids);
+            int sz = centroids.Count;
             double n = _totalWeight;
             double cumulative = 0.0;
 
-            for (int i = 0; i < _centroids.Count; i++)
+            for (int i = 0; i < sz; i++)
             {
-                var c = _centroids[i];
+                var c = centroids[i];
 
                 if (i == 0)
                 {
@@ -167,7 +237,7 @@ namespace TDigestLib
                     }
                 }
 
-                if (i == _centroids.Count - 1)
+                if (i == sz - 1)
                 {
                     if (x > c.Mean)
                     {
@@ -182,17 +252,17 @@ namespace TDigestLib
                     }
                 }
 
-                double mid = cumulative + c.Weight / 2.0;
-                var nextC = _centroids[i + 1];
+                double mid2 = cumulative + c.Weight / 2.0;
+                var nextC = centroids[i + 1];
                 double nextCumulative = cumulative + c.Weight;
                 double nextMid = nextCumulative + nextC.Weight / 2.0;
 
                 if (x < nextC.Mean)
                 {
                     if (c.Mean == nextC.Mean)
-                        return (mid + (nextMid - mid) / 2.0) / n;
+                        return (mid2 + (nextMid - mid2) / 2.0) / n;
                     double frac = (x - c.Mean) / (nextC.Mean - c.Mean);
-                    return (mid + frac * (nextMid - mid)) / n;
+                    return (mid2 + frac * (nextMid - mid2)) / n;
                 }
 
                 cumulative += c.Weight;
@@ -204,7 +274,9 @@ namespace TDigestLib
         public void Merge(TDigest other)
         {
             if (other._buffer.Count > 0) other.Compress();
-            foreach (var c in other._centroids)
+            var otherCentroids = new List<Centroid>();
+            other._tree.Collect(otherCentroids);
+            foreach (var c in otherCentroids)
             {
                 Add(c.Mean, c.Weight);
             }
@@ -215,7 +287,7 @@ namespace TDigestLib
             get
             {
                 if (_buffer.Count > 0) Compress();
-                return _centroids.Count;
+                return _tree.Size;
             }
         }
 

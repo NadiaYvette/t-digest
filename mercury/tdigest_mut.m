@@ -1,8 +1,8 @@
 %-----------------------------------------------------------------------------%
 % tdigest_mut.m
 %
-% Truly mutable t-digest implementation using Mercury's array module
-% with di/uo destructive update modes and a Fenwick tree for prefix sums.
+% Mutable t-digest implementation using an array-backed 2-3-4 tree
+% (measured_tree234) with four-component monoidal measures.
 %
 % Merging digest variant with K_1 (arcsine) scale function.
 %
@@ -24,20 +24,36 @@
 %-----------------------------------------------------------------------------%
 
 :- import_module tdigest.   % For the centroid type.
+:- import_module measured_tree234.
+
+    % Four-component monoidal measure for t-digest centroids.
+    %
+:- type td_mut_measure
+    --->    td_mut_measure(
+                tdm_weight          :: float,
+                tdm_count           :: int,
+                tdm_max_mean        :: float,
+                tdm_mean_weight_sum :: float
+            ).
 
 :- type mut_tdigest
     --->    mut_tdigest(
                 mt_delta        :: float,
-                mt_centroids    :: array(centroid),  % sorted by mean
-                mt_count        :: int,              % number of active centroids
-                mt_buffer       :: array(centroid),   % unsorted buffer
-                mt_buf_len      :: int,              % current buffer length
-                mt_buf_cap      :: int,              % buffer capacity
+                mt_tree         :: measured_tree(centroid, td_mut_measure),
+                mt_buffer       :: array(centroid),
+                mt_buf_len      :: int,
+                mt_buf_cap      :: int,
                 mt_total_weight :: float,
                 mt_min          :: float,
-                mt_max          :: float,
-                mt_fenwick      :: array(float)      % Fenwick tree of weights
+                mt_max          :: float
             ).
+
+%-----------------------------------------------------------------------------%
+% Type class instances
+%-----------------------------------------------------------------------------%
+
+:- instance mt_monoid(td_mut_measure).
+:- instance mt_measured(td_mut_measure, centroid).
 
 %-----------------------------------------------------------------------------%
 % Public interface (di/uo threaded)
@@ -55,7 +71,7 @@
     %
 :- pred mut_add_value(float::in, mut_tdigest::di, mut_tdigest::uo) is det.
 
-    % Force compression of buffered values into the centroid array.
+    % Force compression of buffered values into the tree.
     %
 :- pred mut_compress(mut_tdigest::di, mut_tdigest::uo) is det.
 
@@ -80,15 +96,32 @@
 :- implementation.
 %-----------------------------------------------------------------------------%
 
+:- import_module bool.
 :- import_module list.
 :- import_module math.
 
 %-----------------------------------------------------------------------------%
+% Type class instances
+%-----------------------------------------------------------------------------%
+
+:- instance mt_monoid(td_mut_measure) where [
+    ( mt_mempty = td_mut_measure(0.0, 0, -float.max, 0.0) ),
+    ( mt_mappend(A, B) = td_mut_measure(
+        A ^ tdm_weight + B ^ tdm_weight,
+        A ^ tdm_count + B ^ tdm_count,
+        float.max(A ^ tdm_max_mean, B ^ tdm_max_mean),
+        A ^ tdm_mean_weight_sum + B ^ tdm_mean_weight_sum
+    ) )
+].
+
+:- instance mt_measured(td_mut_measure, centroid) where [
+    ( mt_measure(centroid(Mean, Weight)) =
+        td_mut_measure(Weight, 1, Mean, Mean * Weight)
+    )
+].
+
+%-----------------------------------------------------------------------------%
 % Promise-unique helper
-%
-% When we deconstruct a mut_tdigest (di) and reconstruct it, the fields
-% lose their unique inst.  Since di guarantees sole ownership, it is
-% safe to promise uniqueness on the rebuilt record.
 %-----------------------------------------------------------------------------%
 
 :- func promise_unique_td(mut_tdigest) = mut_tdigest.
@@ -105,144 +138,30 @@ promise_unique_td(TD) = unsafe_promise_unique(TD).
 k_scale(Delta, Q) = (Delta / (2.0 * math.pi)) * math.asin(2.0 * Q - 1.0).
 
 %-----------------------------------------------------------------------------%
-% Fenwick tree operations
+% Centroid comparison
 %-----------------------------------------------------------------------------%
 
-    % Build a Fenwick tree from the weights of the first Count centroids.
-    % Returns a unique array sized Count+1 (1-indexed internally).
-    %
-:- pred fenwick_build(array(centroid)::in, int::in,
-    array(float)::array_uo) is det.
+:- pred compare_centroids(centroid::in, centroid::in,
+    comparison_result::uo) is det.
 
-fenwick_build(Centroids, Count, Fenwick) :-
-    array.init(Count + 1, 0.0, Fenwick0),
-    fenwick_build_loop(Centroids, Count, 0, Fenwick0, Fenwick).
+compare_centroids(centroid(MeanA, _), centroid(MeanB, _), Result) :-
+    compare(Result, MeanA, MeanB).
 
-:- pred fenwick_build_loop(array(centroid)::in, int::in, int::in,
-    array(float)::array_di, array(float)::array_uo) is det.
+%-----------------------------------------------------------------------------%
+% Dummy centroid for array initialization
+%-----------------------------------------------------------------------------%
 
-fenwick_build_loop(Centroids, Count, I, !Fenwick) :-
-    ( if I < Count then
-        array.lookup(Centroids, I, C),
-        W = C ^ weight,
-        fenwick_update(I, W, Count, !Fenwick),
-        fenwick_build_loop(Centroids, Count, I + 1, !Fenwick)
-    else
-        true
-    ).
+:- func dummy_centroid = centroid.
 
-    % Add Val to the Fenwick tree at position I (0-indexed externally,
-    % converted to 1-indexed internally).
-    %
-:- pred fenwick_update(int::in, float::in, int::in,
-    array(float)::array_di, array(float)::array_uo) is det.
+dummy_centroid = centroid(0.0, 0.0).
 
-fenwick_update(I, Val, Count, !Fenwick) :-
-    J = I + 1,  % Convert to 1-indexed.
-    fenwick_update_loop(J, Val, Count, !Fenwick).
+%-----------------------------------------------------------------------------%
+% Weight extraction from measure
+%-----------------------------------------------------------------------------%
 
-:- pred fenwick_update_loop(int::in, float::in, int::in,
-    array(float)::array_di, array(float)::array_uo) is det.
+:- func weight_of_measure(td_mut_measure) = float.
 
-fenwick_update_loop(J, Val, Count, !Fenwick) :-
-    ( if J =< Count then
-        array.lookup(!.Fenwick, J, Old),
-        array.set(J, Old + Val, !Fenwick),
-        NextJ = J + (J /\ (-J)),   % J + lowest set bit
-        fenwick_update_loop(NextJ, Val, Count, !Fenwick)
-    else
-        true
-    ).
-
-    % Compute prefix sum for indices 0..I (inclusive, 0-indexed externally).
-    % Returns sum of weights for centroids 0 through I.
-    %
-:- func fenwick_prefix_sum(array(float), int) = float.
-
-fenwick_prefix_sum(Fenwick, I) = Sum :-
-    J = I + 1,  % Convert to 1-indexed.
-    fenwick_prefix_sum_loop(Fenwick, J, 0.0, Sum).
-
-:- pred fenwick_prefix_sum_loop(array(float)::in, int::in,
-    float::in, float::out) is det.
-
-fenwick_prefix_sum_loop(Fenwick, J, Acc, Sum) :-
-    ( if J > 0 then
-        array.lookup(Fenwick, J, Val),
-        NextJ = J - (J /\ (-J)),   % J - lowest set bit
-        fenwick_prefix_sum_loop(Fenwick, NextJ, Acc + Val, Sum)
-    else
-        Sum = Acc
-    ).
-
-    % Find the smallest index I (0-indexed) where prefix sum >= Target.
-    % Uses O(log n) binary descent on the Fenwick tree.
-    % Also returns the prefix sum up to (but not including) index I.
-    %
-:- pred fenwick_find(array(float)::in, int::in, float::in,
-    int::out, float::out) is det.
-
-fenwick_find(Fenwick, Count, Target, Idx, CumBefore) :-
-    largest_power_of_2(Count, BitMask),
-    fenwick_find_loop(Fenwick, Count, Target, BitMask, 0, 0.0,
-        Idx1, _),
-    % Idx1 is 0-indexed result from the descent.
-    ( if Idx1 >= Count then
-        Idx = Count - 1
-    else
-        Idx = Idx1
-    ),
-    ( if Idx > 0 then
-        CumBefore = fenwick_prefix_sum(Fenwick, Idx - 1)
-    else
-        CumBefore = 0.0
-    ).
-
-:- pred largest_power_of_2(int::in, int::out) is det.
-
-largest_power_of_2(N, P) :-
-    ( if N =< 0 then
-        P = 0
-    else
-        largest_power_of_2_loop(1, N, P)
-    ).
-
-:- pred largest_power_of_2_loop(int::in, int::in, int::out) is det.
-
-largest_power_of_2_loop(Cur, N, P) :-
-    Next = Cur << 1,
-    ( if Next =< N then
-        largest_power_of_2_loop(Next, N, P)
-    else
-        P = Cur
-    ).
-
-:- pred fenwick_find_loop(array(float)::in, int::in, float::in,
-    int::in, int::in, float::in, int::out, float::out) is det.
-
-fenwick_find_loop(Fenwick, Count, Target, BitMask, Pos, CumAcc,
-        Idx, CumOut) :-
-    ( if BitMask = 0 then
-        Idx = Pos,
-        CumOut = CumAcc
-    else
-        NextPos = Pos + BitMask,
-        NextBit = BitMask >> 1,
-        ( if NextPos =< Count then
-            array.lookup(Fenwick, NextPos, TreeVal),
-            NewCum = CumAcc + TreeVal,
-            ( if NewCum < Target then
-                fenwick_find_loop(Fenwick, Count, Target, NextBit,
-                    NextPos, NewCum, Idx, CumOut)
-            else
-                fenwick_find_loop(Fenwick, Count, Target, NextBit,
-                    Pos, CumAcc, Idx, CumOut)
-            )
-        else
-            fenwick_find_loop(Fenwick, Count, Target, NextBit,
-                Pos, CumAcc, Idx, CumOut)
-        )
-    ).
+weight_of_measure(M) = M ^ tdm_weight.
 
 %-----------------------------------------------------------------------------%
 % Construction
@@ -250,12 +169,11 @@ fenwick_find_loop(Fenwick, Count, Target, BitMask, Pos, CumAcc,
 
 mut_new(Delta, TD) :-
     BufCap = float.ceiling_to_int(Delta * 5.0),
-    array.init(BufCap, centroid(0.0, 0.0), Centroids),
-    array.init(BufCap, centroid(0.0, 0.0), Buffer),
-    array.init(1, 0.0, Fenwick),
+    mt_new(dummy_centroid, Tree),
+    array.init(BufCap, dummy_centroid, Buffer),
     TD = promise_unique_td(
-        mut_tdigest(Delta, Centroids, 0, Buffer, 0, BufCap,
-            0.0, float.max, -float.max, Fenwick)).
+        mut_tdigest(Delta, Tree, Buffer, 0, BufCap,
+            0.0, float.max, -float.max)).
 
 %-----------------------------------------------------------------------------%
 % Adding values
@@ -265,8 +183,8 @@ mut_add_value(Value, !TD) :-
     mut_add(Value, 1.0, !TD).
 
 mut_add(Value, Weight, TD0, TD) :-
-    TD0 = mut_tdigest(Delta, Centroids0, Count, Buffer0, BufLen0, BufCap,
-        TotalWeight0, Min0, Max0, Fenwick0),
+    TD0 = mut_tdigest(Delta, Tree, Buffer0, BufLen0, BufCap,
+        TotalWeight0, Min0, Max0),
     NewTotalWeight = TotalWeight0 + Weight,
     NewMin = float.min(Value, Min0),
     NewMax = float.max(Value, Max0),
@@ -278,13 +196,13 @@ mut_add(Value, Weight, TD0, TD) :-
             unsafe_promise_unique(Buffer0), Buffer1)
     else
         NewBufSize = BufSize * 2 + 1,
-        array.resize(NewBufSize, centroid(0.0, 0.0),
+        array.resize(NewBufSize, dummy_centroid,
             unsafe_promise_unique(Buffer0), Buffer1a),
         array.set(BufLen0, centroid(Value, Weight), Buffer1a, Buffer1)
     ),
     TD1 = promise_unique_td(
-        mut_tdigest(Delta, Centroids0, Count, Buffer1, NewBufLen, BufCap,
-            NewTotalWeight, NewMin, NewMax, Fenwick0)),
+        mut_tdigest(Delta, Tree, Buffer1, NewBufLen, BufCap,
+            NewTotalWeight, NewMin, NewMax)),
     ( if NewBufLen >= BufCap then
         mut_compress(TD1, TD)
     else
@@ -296,44 +214,41 @@ mut_add(Value, Weight, TD0, TD) :-
 %-----------------------------------------------------------------------------%
 
 mut_compress(TD0, TD) :-
-    TD0 = mut_tdigest(Delta, Centroids0, Count0, Buffer0, BufLen0, BufCap,
-        TotalWeight, Min, Max, _Fenwick0),
-    ( if BufLen0 = 0, Count0 =< 1 then
+    TD0 = mut_tdigest(Delta, Tree0, Buffer0, BufLen0, BufCap,
+        TotalWeight, Min, Max),
+    TreeSize = mt_size(Tree0),
+    ( if BufLen0 = 0, TreeSize =< 1 then
         TD = promise_unique_td(TD0)
     else
-        % Collect all centroids into a list, sort, then greedy merge.
-        array_to_list_n(Centroids0, Count0, 0, CentroidList),
+        % Collect all centroids from tree and buffer, sort, then greedy merge.
+        mt_collect(Tree0, TreeCentroids),
         array_to_list_n(Buffer0, BufLen0, 0, BufferList),
-        AllList = CentroidList ++ BufferList,
-        list.sort(compare_centroids, AllList, Sorted),
+        AllList = TreeCentroids ++ BufferList,
+        list.sort(compare_centroids_for_sort, AllList, Sorted),
         (
             Sorted = [],
-            array.init(1, 0.0, EmptyFenwick),
-            array.init(BufCap, centroid(0.0, 0.0), EmptyBuffer),
+            mt_new(dummy_centroid, NewTree),
+            array.init(BufCap, dummy_centroid, NewBuffer),
             TD = promise_unique_td(
-                mut_tdigest(Delta, Centroids0, 0, EmptyBuffer, 0, BufCap,
-                    TotalWeight, Min, Max, EmptyFenwick))
+                mut_tdigest(Delta, NewTree, NewBuffer, 0, BufCap,
+                    TotalWeight, Min, Max))
         ;
             Sorted = [First | Rest],
-            MaxCentroids = list.length(Sorted),
-            array.init(MaxCentroids, centroid(0.0, 0.0), MergedArr0),
-            array.set(0, First, MergedArr0, MergedArr1),
-            greedy_merge_array(Delta, TotalWeight, 0.0, 0, First,
-                Rest, MergedArr1, MergedArr2, MergedCount),
-            % Build Fenwick tree from merged centroids.
-            fenwick_build(MergedArr2, MergedCount, FenwickNew),
-            % Create new empty buffer.
-            array.init(BufCap, centroid(0.0, 0.0), NewBuffer),
+            greedy_merge(Delta, TotalWeight, 0.0, First, Rest, [], Merged0),
+            list.reverse(Merged0, Merged),
+            % Build tree from sorted merged centroids.
+            mt_build_from_sorted(dummy_centroid, Merged, NewTree),
+            array.init(BufCap, dummy_centroid, NewBuffer),
             TD = promise_unique_td(
-                mut_tdigest(Delta, MergedArr2, MergedCount, NewBuffer,
-                    0, BufCap, TotalWeight, Min, Max, FenwickNew))
+                mut_tdigest(Delta, NewTree, NewBuffer, 0, BufCap,
+                    TotalWeight, Min, Max))
         )
     ).
 
-:- pred compare_centroids(centroid::in, centroid::in,
+:- pred compare_centroids_for_sort(centroid::in, centroid::in,
     comparison_result::uo) is det.
 
-compare_centroids(centroid(MeanA, _), centroid(MeanB, _), Result) :-
+compare_centroids_for_sort(centroid(MeanA, _), centroid(MeanB, _), Result) :-
     compare(Result, MeanA, MeanB).
 
 :- pred array_to_list_n(array(T)::in, int::in, int::in,
@@ -348,19 +263,15 @@ array_to_list_n(Arr, N, I, List) :-
         List = [Elem | Tail]
     ).
 
-    % Greedy merge loop: walks the sorted list and merges into the output
-    % array.  Current centroid is at index OutIdx in the array.
+    % Greedy merge: accumulates merged centroids in reverse order.
     %
-:- pred greedy_merge_array(float::in, float::in, float::in, int::in,
+:- pred greedy_merge(float::in, float::in, float::in,
     centroid::in, list(centroid)::in,
-    array(centroid)::array_di, array(centroid)::array_uo,
-    int::out) is det.
+    list(centroid)::in, list(centroid)::out) is det.
 
-greedy_merge_array(_, _, _, OutIdx, Current, [], !Arr, OutCount) :-
-    array.set(OutIdx, Current, !Arr),
-    OutCount = OutIdx + 1.
-greedy_merge_array(Delta, N, WeightSoFar, OutIdx, Current, [Item | Rest],
-        !Arr, OutCount) :-
+greedy_merge(_, _, _, Current, [], !Acc) :-
+    !:Acc = [Current | !.Acc].
+greedy_merge(Delta, N, WeightSoFar, Current, [Item | Rest], !Acc) :-
     Proposed = Current ^ weight + Item ^ weight,
     Q0 = WeightSoFar / N,
     Q1 = (WeightSoFar + Proposed) / N,
@@ -376,17 +287,12 @@ greedy_merge_array(Delta, N, WeightSoFar, OutIdx, Current, [Item | Rest],
         MergedMean = (Current ^ mean * Current ^ weight +
             Item ^ mean * Item ^ weight) / MergedWeight,
         MergedC = centroid(MergedMean, MergedWeight),
-        array.set(OutIdx, MergedC, !Arr),
-        greedy_merge_array(Delta, N, WeightSoFar, OutIdx, MergedC, Rest,
-            !Arr, OutCount)
+        greedy_merge(Delta, N, WeightSoFar, MergedC, Rest, !Acc)
     else
         % Emit Current, start a new centroid with Item.
-        array.set(OutIdx, Current, !Arr),
+        !:Acc = [Current | !.Acc],
         NewWeightSoFar = WeightSoFar + Current ^ weight,
-        NewOutIdx = OutIdx + 1,
-        array.set(NewOutIdx, Item, !Arr),
-        greedy_merge_array(Delta, N, NewWeightSoFar, NewOutIdx, Item, Rest,
-            !Arr, OutCount)
+        greedy_merge(Delta, N, NewWeightSoFar, Item, Rest, !Acc)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -396,7 +302,7 @@ greedy_merge_array(Delta, N, WeightSoFar, OutIdx, Current, [Item | Rest],
 :- pred ensure_compressed(mut_tdigest::di, mut_tdigest::uo) is det.
 
 ensure_compressed(!TD) :-
-    !.TD = mut_tdigest(_, _, _, _, BufLen, _, _, _, _, _),
+    !.TD = mut_tdigest(_, _, _, BufLen, _, _, _, _),
     ( if BufLen > 0 then
         mut_compress(promise_unique_td(!.TD), !:TD)
     else
@@ -409,29 +315,49 @@ ensure_compressed(!TD) :-
 
 mut_quantile(TD0, Q, TD, Value) :-
     ensure_compressed(TD0, TD1),
-    TD1 = mut_tdigest(_, Centroids, Count, _, _, _, TotalWeight,
-        Min, Max, Fenwick),
-    ( if Count = 0 then
+    TD1 = mut_tdigest(_, Tree, _, _, _, TotalWeight, Min, Max),
+    TreeSize = mt_size(Tree),
+    ( if TreeSize = 0 then
         Value = 0.0
-    else if Count = 1 then
-        array.lookup(Centroids, 0, Only),
-        Value = Only ^ mean
+    else if TreeSize = 1 then
+        mt_collect(Tree, Centroids1),
+        ( Centroids1 = [Only | _],
+            Value = Only ^ mean
+        ; Centroids1 = [],
+            Value = 0.0
+        )
     else
         QClamped = float.max(0.0, float.min(1.0, Q)),
         Target = QClamped * TotalWeight,
-        quantile_with_fenwick(Centroids, Count, Fenwick, Target,
+        quantile_with_tree(Tree, TreeSize, Target,
             TotalWeight, Min, Max, Value)
     ),
     TD = promise_unique_td(TD1).
 
-:- pred quantile_with_fenwick(array(centroid)::in, int::in,
-    array(float)::in, float::in, float::in, float::in, float::in,
+:- pred quantile_with_tree(measured_tree(centroid, td_mut_measure)::in,
+    int::in, float::in, float::in, float::in, float::in,
     float::out) is det.
 
-quantile_with_fenwick(Centroids, Count, Fenwick, Target, N, Min, Max,
-        Value) :-
-    fenwick_find(Fenwick, Count, Target, Idx, CumBefore),
-    array.lookup(Centroids, Idx, C),
+quantile_with_tree(Tree, Count, Target, N, Min, Max, Value) :-
+    mt_find_by_weight(Tree, Target, weight_of_measure, WR),
+    ( if WR ^ wr_found = yes then
+        % Collect all centroids for interpolation
+        mt_collect(Tree, Centroids),
+        Idx = WR ^ wr_index,
+        CumBefore = WR ^ wr_cum_before,
+        quantile_interpolate(Centroids, Count, Idx, CumBefore,
+            Target, N, Min, Max, Value)
+    else
+        Value = 0.0
+    ).
+
+:- pred quantile_interpolate(list(centroid)::in, int::in, int::in,
+    float::in, float::in, float::in, float::in, float::in,
+    float::out) is det.
+
+quantile_interpolate(Centroids, Count, Idx, CumBefore, Target, N,
+        Min, Max, Value) :-
+    list.det_index0(Centroids, Idx, C),
     LastIdx = Count - 1,
     HalfW = C ^ weight / 2.0,
     ( if Idx = 0, Target < HalfW then
@@ -456,7 +382,7 @@ quantile_with_fenwick(Centroids, Count, Fenwick, Target, N, Min, Max,
         )
     else
         % Middle: interpolate between adjacent centroid midpoints.
-        array.lookup(Centroids, Idx + 1, NextC),
+        list.det_index0(Centroids, Idx + 1, NextC),
         Cumulative = CumBefore,
         Mid = Cumulative + HalfW,
         NextMid = Cumulative + C ^ weight + NextC ^ weight / 2.0,
@@ -474,7 +400,7 @@ quantile_with_fenwick(Centroids, Count, Fenwick, Target, N, Min, Max,
         )
     ).
 
-:- pred quantile_walk_forward(array(centroid)::in, int::in, int::in,
+:- pred quantile_walk_forward(list(centroid)::in, int::in, int::in,
     float::in, float::in, float::in, float::in, float::out) is det.
 
 quantile_walk_forward(Centroids, Count, I, Cumulative, Target, N, Max,
@@ -483,7 +409,7 @@ quantile_walk_forward(Centroids, Count, I, Cumulative, Target, N, Max,
     ( if I > LastIdx then
         Value = Max
     else
-        array.lookup(Centroids, I, C),
+        list.det_index0(Centroids, I, C),
         HalfW = C ^ weight / 2.0,
         ( if I = LastIdx then
             ( if Target > N - HalfW then
@@ -498,7 +424,7 @@ quantile_walk_forward(Centroids, Count, I, Cumulative, Target, N, Max,
                 Value = C ^ mean
             )
         else
-            array.lookup(Centroids, I + 1, NextC),
+            list.det_index0(Centroids, I + 1, NextC),
             Mid = Cumulative + HalfW,
             NextMid = Cumulative + C ^ weight + NextC ^ weight / 2.0,
             ( if Target =< NextMid then
@@ -521,43 +447,31 @@ quantile_walk_forward(Centroids, Count, I, Cumulative, Target, N, Max,
 
 mut_cdf(TD0, X, TD, Q) :-
     ensure_compressed(TD0, TD1),
-    TD1 = mut_tdigest(_, Centroids, Count, _, _, _, TotalWeight,
-        Min, Max, Fenwick),
-    ( if Count = 0 then
+    TD1 = mut_tdigest(_, Tree, _, _, _, TotalWeight, Min, Max),
+    TreeSize = mt_size(Tree),
+    ( if TreeSize = 0 then
         Q = 0.0
     else if X =< Min then
         Q = 0.0
     else if X >= Max then
         Q = 1.0
     else
-        cdf_with_arrays(Centroids, Count, Fenwick, X, TotalWeight,
+        mt_collect(Tree, Centroids),
+        cdf_walk(Centroids, TreeSize, 0, 0.0, X, TotalWeight,
             Min, Max, Q)
     ),
     TD = promise_unique_td(TD1).
 
-:- pred cdf_with_arrays(array(centroid)::in, int::in,
-    array(float)::in, float::in, float::in, float::in, float::in,
+:- pred cdf_walk(list(centroid)::in, int::in, int::in, float::in,
+    float::in, float::in, float::in, float::in,
     float::out) is det.
 
-cdf_with_arrays(Centroids, Count, Fenwick, X, N, Min, Max, Q) :-
-    % Linear walk through centroids (mirrors the pure implementation).
-    cdf_walk(Centroids, Count, Fenwick, 0, X, N, Min, Max, Q).
-
-:- pred cdf_walk(array(centroid)::in, int::in, array(float)::in,
-    int::in, float::in, float::in, float::in, float::in,
-    float::out) is det.
-
-cdf_walk(Centroids, Count, Fenwick, I, X, N, Min, Max, Q) :-
+cdf_walk(Centroids, Count, I, Cumulative, X, N, Min, Max, Q) :-
     LastIdx = Count - 1,
     ( if I > LastIdx then
         Q = 1.0
     else
-        array.lookup(Centroids, I, C),
-        ( if I > 0 then
-            Cumulative = fenwick_prefix_sum(Fenwick, I - 1)
-        else
-            Cumulative = 0.0
-        ),
+        list.det_index0(Centroids, I, C),
         ( if I = 0, X < C ^ mean then
             InnerW = C ^ weight / 2.0,
             ( if C ^ mean = Min then
@@ -579,7 +493,7 @@ cdf_walk(Centroids, Count, Fenwick, I, X, N, Min, Max, Q) :-
         else if I = LastIdx then
             Q = (Cumulative + C ^ weight / 2.0) / N
         else
-            array.lookup(Centroids, I + 1, NextC),
+            list.det_index0(Centroids, I + 1, NextC),
             Mid0 = Cumulative + C ^ weight / 2.0,
             NextCumulative = Cumulative + C ^ weight,
             NextMid = NextCumulative + NextC ^ weight / 2.0,
@@ -591,8 +505,8 @@ cdf_walk(Centroids, Count, Fenwick, I, X, N, Min, Max, Q) :-
                 ),
                 Q = (Mid0 + Frac * (NextMid - Mid0)) / N
             else
-                cdf_walk(Centroids, Count, Fenwick, I + 1,
-                    X, N, Min, Max, Q)
+                cdf_walk(Centroids, Count, I + 1,
+                    Cumulative + C ^ weight, X, N, Min, Max, Q)
             )
         )
     ).
@@ -603,7 +517,8 @@ cdf_walk(Centroids, Count, Fenwick, I, X, N, Min, Max, Q) :-
 
 mut_centroid_count(TD0, TD, Count) :-
     ensure_compressed(TD0, TD1),
-    TD1 = mut_tdigest(_, _, Count, _, _, _, _, _, _, _),
+    TD1 = mut_tdigest(_, Tree, _, _, _, _, _, _),
+    Count = mt_size(Tree),
     TD = promise_unique_td(TD1).
 
 %-----------------------------------------------------------------------------%

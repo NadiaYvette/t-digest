@@ -1,6 +1,7 @@
 /*
  * Dunning t-digest for online quantile estimation.
  * Merging digest variant with K_1 (arcsine) scale function.
+ * Uses an array-backed 2-3-4 tree with monoidal measures.
  */
 
 #include "tdigest.hpp"
@@ -10,6 +11,8 @@
 #endif
 
 static constexpr int BUFFER_FACTOR = 5;
+
+static double weight_of(const TdMeasure &m) { return m.weight; }
 
 TDigest::TDigest(double delta)
     : delta_(delta), total_weight_(0.0),
@@ -42,12 +45,13 @@ void TDigest::add(double value, double weight) {
 }
 
 void TDigest::compress() {
-  if (buffer_.empty() && centroids_.size() <= 1)
+  if (buffer_.empty() && tree_.size() <= 1)
     return;
 
+  // Collect all centroids from tree and buffer
   std::vector<Centroid> all;
-  all.reserve(centroids_.size() + buffer_.size());
-  all.insert(all.end(), centroids_.begin(), centroids_.end());
+  all.reserve(tree_.size() + buffer_.size());
+  tree_.collect(all);
   all.insert(all.end(), buffer_.begin(), buffer_.end());
   buffer_.clear();
 
@@ -55,6 +59,7 @@ void TDigest::compress() {
     return a.mean < b.mean;
   });
 
+  // Merge centroids according to K1 scale function
   std::vector<Centroid> merged;
   merged.reserve(all.size());
   merged.push_back(all[0]);
@@ -75,64 +80,44 @@ void TDigest::compress() {
     }
   }
 
-  centroids_ = std::move(merged);
-  fenwick_build();
-}
-
-void TDigest::fenwick_build() {
-  int n = static_cast<int>(centroids_.size());
-  fenwick_.assign(n + 1, 0.0);
-  for (int i = 0; i < n; i++) {
-    int j = i + 1; // 1-indexed
-    fenwick_[j] += centroids_[i].weight;
-    int parent = j + (j & (-j));
-    if (parent <= n)
-      fenwick_[parent] += fenwick_[j];
-  }
-}
-
-double TDigest::fenwick_prefix_sum(int i) const {
-  // Sum of weights for centroids_[0..i] (inclusive), i is 0-based
-  double s = 0.0;
-  for (int j = i + 1; j > 0; j -= j & (-j))
-    s += fenwick_[j];
-  return s;
-}
-
-int TDigest::fenwick_find(double target) const {
-  // Find smallest 0-based index i such that prefix_sum(i) >= target
-  int n = static_cast<int>(centroids_.size());
-  int pos = 0;
-  double sum = 0.0;
-  for (int bit = 1 << static_cast<int>(std::log2(n > 0 ? n : 1)); bit > 0;
-       bit >>= 1) {
-    if (pos + bit <= n && sum + fenwick_[pos + bit] < target) {
-      pos += bit;
-      sum += fenwick_[pos];
-    }
-  }
-  return pos; // 0-based index
+  // Rebuild tree from sorted merged centroids
+  tree_.build_from_sorted(merged);
 }
 
 double TDigest::quantile(double q) {
   if (!buffer_.empty())
     compress();
-  if (centroids_.empty())
+
+  if (tree_.size() == 0)
     return std::numeric_limits<double>::quiet_NaN();
-  if (centroids_.size() == 1)
-    return centroids_[0].mean;
+  if (tree_.size() == 1) {
+    // Single centroid - collect and return its mean
+    std::vector<Centroid> all;
+    tree_.collect(all);
+    return all[0].mean;
+  }
 
   if (q < 0.0)
     q = 0.0;
   if (q > 1.0)
     q = 1.0;
 
+  // Collect centroids for interpolation (same logic as before)
+  std::vector<Centroid> centroids;
+  tree_.collect(centroids);
+  size_t sz = centroids.size();
+
   double n = total_weight_;
   double target = q * n;
-  size_t sz = centroids_.size();
+
+  // Build prefix sums for cumulative weights
+  std::vector<double> cum(sz);
+  cum[0] = centroids[0].weight;
+  for (size_t i = 1; i < sz; i++)
+    cum[i] = cum[i - 1] + centroids[i].weight;
 
   // Handle first centroid edge case
-  const auto &first = centroids_[0];
+  const auto &first = centroids[0];
   if (target < first.weight / 2.0) {
     if (first.weight == 1.0)
       return min_;
@@ -140,7 +125,7 @@ double TDigest::quantile(double q) {
   }
 
   // Handle last centroid edge case
-  const auto &last = centroids_[sz - 1];
+  const auto &last = centroids[sz - 1];
   if (target > n - last.weight / 2.0) {
     if (last.weight == 1.0)
       return max_;
@@ -149,28 +134,36 @@ double TDigest::quantile(double q) {
            (max_ - last.mean) * ((target - remaining) / (last.weight / 2.0));
   }
 
-  // Use Fenwick tree to find the centroid whose cumulative weight range
-  // contains the target. fenwick_find returns the first index where
-  // prefix_sum >= target.
-  int idx = fenwick_find(target);
-  // Clamp to valid range for interpolation
+  // Find the centroid whose cumulative weight range contains target
+  // Use binary search on cumulative weights
+  int idx = 0;
+  {
+    int lo = 0, hi = static_cast<int>(sz) - 1;
+    while (lo < hi) {
+      int mid = (lo + hi) / 2;
+      if (cum[mid] < target)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    idx = lo;
+  }
+
   if (idx >= static_cast<int>(sz) - 1)
     idx = static_cast<int>(sz) - 2;
   if (idx < 0)
     idx = 0;
 
-  // Compute cumulative weight up to (but not including) centroid[idx]
-  double cumulative = (idx > 0) ? fenwick_prefix_sum(idx - 1) : 0.0;
-  const auto &c = centroids_[idx];
-  double mid = cumulative + c.weight / 2.0;
+  double cumulative = (idx > 0) ? cum[idx - 1] : 0.0;
+  const auto &c = centroids[idx];
+  double mid_val = cumulative + c.weight / 2.0;
 
-  // If target is before this centroid's midpoint, look at the previous pair
-  if (idx > 0 && target < mid) {
+  if (idx > 0 && target < mid_val) {
     idx--;
-    cumulative = (idx > 0) ? fenwick_prefix_sum(idx - 1) : 0.0;
-    const auto &c2 = centroids_[idx];
+    cumulative = (idx > 0) ? cum[idx - 1] : 0.0;
+    const auto &c2 = centroids[idx];
     double mid2 = cumulative + c2.weight / 2.0;
-    const auto &next_c = centroids_[idx + 1];
+    const auto &next_c = centroids[idx + 1];
     double next_mid = cumulative + c2.weight + next_c.weight / 2.0;
     double frac =
         (next_mid == mid2) ? 0.5 : (target - mid2) / (next_mid - mid2);
@@ -180,11 +173,12 @@ double TDigest::quantile(double q) {
   if (static_cast<size_t>(idx) == sz - 1)
     return c.mean;
 
-  const auto &next_c = centroids_[idx + 1];
+  const auto &next_c = centroids[idx + 1];
   double next_mid = cumulative + c.weight + next_c.weight / 2.0;
 
   if (target <= next_mid) {
-    double frac = (next_mid == mid) ? 0.5 : (target - mid) / (next_mid - mid);
+    double frac =
+        (next_mid == mid_val) ? 0.5 : (target - mid_val) / (next_mid - mid_val);
     return c.mean + frac * (next_c.mean - c.mean);
   }
 
@@ -194,41 +188,49 @@ double TDigest::quantile(double q) {
 double TDigest::cdf(double x) {
   if (!buffer_.empty())
     compress();
-  if (centroids_.empty())
+
+  if (tree_.size() == 0)
     return std::numeric_limits<double>::quiet_NaN();
   if (x <= min_)
     return 0.0;
   if (x >= max_)
     return 1.0;
 
+  // Collect centroids for interpolation
+  std::vector<Centroid> centroids;
+  tree_.collect(centroids);
+  size_t sz = centroids.size();
   double n = total_weight_;
-  size_t sz = centroids_.size();
 
-  // Use binary search (std::lower_bound) to find the first centroid with
-  // mean >= x, giving O(log n) lookup by value.
+  // Build prefix sums
+  std::vector<double> cum(sz);
+  cum[0] = centroids[0].weight;
+  for (size_t i = 1; i < sz; i++)
+    cum[i] = cum[i - 1] + centroids[i].weight;
+
+  // Binary search for position
   auto it = std::lower_bound(
-      centroids_.begin(), centroids_.end(), x,
+      centroids.begin(), centroids.end(), x,
       [](const Centroid &c, double val) { return c.mean < val; });
 
-  size_t pos = static_cast<size_t>(it - centroids_.begin());
+  size_t pos = static_cast<size_t>(it - centroids.begin());
 
   // x is less than the first centroid's mean
   if (pos == 0) {
-    const auto &c = centroids_[0];
+    const auto &c = centroids[0];
     if (x < c.mean) {
       double inner_w = c.weight / 2.0;
       double frac = (c.mean == min_) ? 1.0 : (x - min_) / (c.mean - min_);
       return (inner_w * frac) / n;
     }
-    // x == c.mean
     return (c.weight / 2.0) / n;
   }
 
   // x is >= all centroid means
   if (pos == sz) {
-    const auto &c = centroids_[sz - 1];
+    const auto &c = centroids[sz - 1];
     double cumulative =
-        (sz > 1) ? fenwick_prefix_sum(static_cast<int>(sz) - 2) : 0.0;
+        (sz > 1) ? cum[sz - 2] : 0.0;
     if (x > c.mean) {
       double right_w = n - cumulative - c.weight / 2.0;
       double frac = (max_ == c.mean) ? 0.0 : (x - c.mean) / (max_ - c.mean);
@@ -238,18 +240,15 @@ double TDigest::cdf(double x) {
   }
 
   // x is between centroids_[pos-1].mean and centroids_[pos].mean
-  // (or exactly at centroids_[pos].mean)
   size_t i = pos - 1;
-  const auto &c = centroids_[i];
-  const auto &next_c = centroids_[pos];
+  const auto &c = centroids[i];
+  const auto &next_c = centroids[pos];
 
-  double cumulative =
-      (i > 0) ? fenwick_prefix_sum(static_cast<int>(i) - 1) : 0.0;
+  double cumulative = (i > 0) ? cum[i - 1] : 0.0;
   double mid_cdf = cumulative + c.weight / 2.0;
   double next_cumulative = cumulative + c.weight;
   double next_mid = next_cumulative + next_c.weight / 2.0;
 
-  // Check if this is the last centroid
   if (i == sz - 1) {
     if (x > c.mean) {
       double right_w = n - cumulative - c.weight / 2.0;
@@ -267,12 +266,13 @@ double TDigest::cdf(double x) {
     return (mid_cdf + frac * (next_mid - mid_cdf)) / n;
   }
 
-  // x == next_c.mean exactly
   return next_mid / n;
 }
 
 void TDigest::merge(const TDigest &other) {
-  for (const auto &c : other.centroids_) {
+  std::vector<Centroid> other_centroids;
+  other.tree_.collect(other_centroids);
+  for (const auto &c : other_centroids) {
     add(c.mean, c.weight);
   }
   for (const auto &c : other.buffer_) {
@@ -283,7 +283,7 @@ void TDigest::merge(const TDigest &other) {
 int TDigest::centroidCount() {
   if (!buffer_.empty())
     compress();
-  return static_cast<int>(centroids_.size());
+  return tree_.size();
 }
 
 double TDigest::totalWeight() const { return total_weight_; }

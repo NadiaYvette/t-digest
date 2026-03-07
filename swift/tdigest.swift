@@ -1,11 +1,53 @@
 // Dunning t-digest for online quantile estimation.
 // Merging digest variant with K1 (arcsine) scale function.
+// Uses an array-backed 2-3-4 tree with monoidal measures.
 
+#if canImport(Foundation)
 import Foundation
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 struct Centroid {
     var mean: Double
     var weight: Double
+}
+
+// Four-component monoidal measure for t-digest centroids.
+struct TdMeasure {
+    var weight: Double = 0
+    var count: Int = 0
+    var maxMean: Double = -Double.infinity
+    var meanWeightSum: Double = 0
+}
+
+// Traits for the 2-3-4 tree specialized for Centroid keys.
+struct CentroidTraits: Tree234Traits {
+    typealias K = Centroid
+    typealias M = TdMeasure
+
+    static func measure(_ c: Centroid) -> TdMeasure {
+        return TdMeasure(weight: c.weight, count: 1,
+                         maxMean: c.mean, meanWeightSum: c.mean * c.weight)
+    }
+
+    static func combine(_ a: TdMeasure, _ b: TdMeasure) -> TdMeasure {
+        return TdMeasure(weight: a.weight + b.weight,
+                         count: a.count + b.count,
+                         maxMean: Swift.max(a.maxMean, b.maxMean),
+                         meanWeightSum: a.meanWeightSum + b.meanWeightSum)
+    }
+
+    static func identity() -> TdMeasure {
+        return TdMeasure(weight: 0, count: 0,
+                         maxMean: -Double.infinity, meanWeightSum: 0)
+    }
+
+    static func compare(_ a: Centroid, _ b: Centroid) -> Int {
+        if a.mean < b.mean { return -1 }
+        if a.mean > b.mean { return 1 }
+        return 0
+    }
 }
 
 struct TDigest {
@@ -13,7 +55,7 @@ struct TDigest {
     static let bufferFactor: Int = 5
 
     let delta: Double
-    private(set) var centroids: [Centroid] = []
+    private var tree = Tree234<CentroidTraits>()
     private var buffer: [Centroid] = []
     private(set) var totalWeight: Double = 0.0
     private(set) var min: Double = Double.infinity
@@ -36,9 +78,9 @@ struct TDigest {
     }
 
     mutating func compress() {
-        if buffer.isEmpty && centroids.count <= 1 { return }
+        if buffer.isEmpty && tree.size <= 1 { return }
 
-        var all = centroids + buffer
+        var all = tree.collect() + buffer
         buffer.removeAll()
         all.sort { $0.mean < $1.mean }
 
@@ -59,21 +101,32 @@ struct TDigest {
             }
         }
 
-        centroids = newCentroids
+        tree.buildFromSorted(newCentroids)
+    }
+
+    // Provide centroids access for compatibility (collects from tree).
+    var centroids: [Centroid] {
+        mutating get {
+            if !buffer.isEmpty { compress() }
+            return tree.collect()
+        }
     }
 
     mutating func quantile(_ q: Double) -> Double? {
         if !buffer.isEmpty { compress() }
-        guard !centroids.isEmpty else { return nil }
-        if centroids.count == 1 { return centroids[0].mean }
+        let sz = tree.size
+        if sz == 0 { return nil }
+
+        let allCentroids = tree.collect()
+        if sz == 1 { return allCentroids[0].mean }
 
         let q = Swift.max(0.0, Swift.min(1.0, q))
         let n = totalWeight
         let target = q * n
 
         var cumulative = 0.0
-        for i in 0..<centroids.count {
-            let c = centroids[i]
+        for i in 0..<allCentroids.count {
+            let c = allCentroids[i]
 
             if i == 0 {
                 if target < c.weight / 2.0 {
@@ -82,7 +135,7 @@ struct TDigest {
                 }
             }
 
-            if i == centroids.count - 1 {
+            if i == allCentroids.count - 1 {
                 if target > n - c.weight / 2.0 {
                     if c.weight == 1 { return max }
                     let remaining = n - c.weight / 2.0
@@ -92,7 +145,7 @@ struct TDigest {
             }
 
             let mid = cumulative + c.weight / 2.0
-            let nextC = centroids[i + 1]
+            let nextC = allCentroids[i + 1]
             let nextMid = cumulative + c.weight + nextC.weight / 2.0
 
             if target <= nextMid {
@@ -108,15 +161,17 @@ struct TDigest {
 
     mutating func cdf(_ x: Double) -> Double? {
         if !buffer.isEmpty { compress() }
-        guard !centroids.isEmpty else { return nil }
+        let sz = tree.size
+        if sz == 0 { return nil }
         if x <= min { return 0.0 }
         if x >= max { return 1.0 }
 
+        let allCentroids = tree.collect()
         let n = totalWeight
         var cumulative = 0.0
 
-        for i in 0..<centroids.count {
-            let c = centroids[i]
+        for i in 0..<allCentroids.count {
+            let c = allCentroids[i]
 
             if i == 0 {
                 if x < c.mean {
@@ -128,7 +183,7 @@ struct TDigest {
                 }
             }
 
-            if i == centroids.count - 1 {
+            if i == allCentroids.count - 1 {
                 if x > c.mean {
                     let innerW = c.weight / 2.0
                     let rightW = n - cumulative - innerW
@@ -140,7 +195,7 @@ struct TDigest {
             }
 
             let mid = cumulative + c.weight / 2.0
-            let nextC = centroids[i + 1]
+            let nextC = allCentroids[i + 1]
             let nextCumulative = cumulative + c.weight
             let nextMid = nextCumulative + nextC.weight / 2.0
 
@@ -160,7 +215,8 @@ struct TDigest {
 
     mutating func merge(_ other: inout TDigest) {
         if !other.buffer.isEmpty { other.compress() }
-        for c in other.centroids {
+        let otherCentroids = other.tree.collect()
+        for c in otherCentroids {
             add(c.mean, weight: c.weight)
         }
     }
@@ -168,7 +224,7 @@ struct TDigest {
     var centroidCount: Int {
         mutating get {
             if !buffer.isEmpty { compress() }
-            return centroids.count
+            return tree.size
         }
     }
 

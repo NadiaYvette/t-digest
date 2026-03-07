@@ -1,15 +1,16 @@
 """Dunning t-digest for online quantile estimation.
 
 Merging digest variant with K_1 (arcsine) scale function.
-Pure Python -- only uses the math and bisect standard libraries.
+Pure Python -- only uses the math standard library.
 
-Uses a Fenwick tree (binary indexed tree) over centroid weights for
-O(log n) quantile lookups and bisect for O(log n) CDF position finding.
+Uses an array-backed 2-3-4 tree with four-component monoidal measures
+for O(log n) quantile lookups, CDF queries, and neighbor finding.
 """
 
-import bisect
 import math
 from dataclasses import dataclass
+
+from tree234 import Tree234
 
 
 @dataclass
@@ -18,19 +19,68 @@ class Centroid:
     weight: float
 
 
+class TdMeasure:
+    """Four-component monoidal measure for t-digest centroids."""
+    __slots__ = ['weight', 'count', 'max_mean', 'mean_weight_sum']
+
+    def __init__(self, w=0.0, c=0, mm=float('-inf'), mws=0.0):
+        self.weight = w
+        self.count = c
+        self.max_mean = mm
+        self.mean_weight_sum = mws
+
+
+def _centroid_measure(c):
+    """Measure for a single centroid key."""
+    return TdMeasure(c.weight, 1, c.mean, c.mean * c.weight)
+
+
+def _combine(a, b):
+    """Monoidal combine of two measures."""
+    return TdMeasure(
+        a.weight + b.weight,
+        a.count + b.count,
+        max(a.max_mean, b.max_mean),
+        a.mean_weight_sum + b.mean_weight_sum,
+    )
+
+
+def _identity():
+    """Monoidal identity."""
+    return TdMeasure()
+
+
+def _compare_centroids(a, b):
+    """Compare centroids by mean, breaking ties by weight then id."""
+    if a.mean < b.mean:
+        return -1
+    if a.mean > b.mean:
+        return 1
+    # Tie-break by weight for stability
+    if a.weight < b.weight:
+        return -1
+    if a.weight > b.weight:
+        return 1
+    return 0
+
+
+def _weight_of(measure):
+    """Extract weight from a TdMeasure."""
+    return measure.weight
+
+
 class TDigest:
     DEFAULT_DELTA = 100
     BUFFER_FACTOR = 5
 
     def __init__(self, delta: float = DEFAULT_DELTA) -> None:
         self.delta = float(delta)
-        self._centroids: list[Centroid] = []
+        self._tree = Tree234(_centroid_measure, _combine, _identity, _compare_centroids)
         self._buffer: list[Centroid] = []
         self.total_weight = 0.0
         self.min = math.inf
         self.max = -math.inf
         self._buffer_cap = math.ceil(self.delta * self.BUFFER_FACTOR)
-        self._fenwick: list[float] = []
 
     # -- mutation ---------------------------------------------------------
 
@@ -48,10 +98,10 @@ class TDigest:
         return self
 
     def compress(self) -> "TDigest":
-        if not self._buffer and len(self._centroids) <= 1:
+        if not self._buffer and self._tree.size() <= 1:
             return self
 
-        all_c = self._centroids + self._buffer
+        all_c = self._tree.to_list() + self._buffer
         self._buffer = []
         all_c.sort(key=lambda c: c.mean)
 
@@ -72,8 +122,9 @@ class TDigest:
                 weight_so_far += new[-1].weight
                 new.append(Centroid(all_c[i].mean, all_c[i].weight))
 
-        self._centroids = new
-        self._fenwick_build()
+        self._tree.clear()
+        for c in new:
+            self._tree.insert(c)
         return self
 
     def merge(self, other: "TDigest") -> "TDigest":
@@ -86,20 +137,24 @@ class TDigest:
     def quantile(self, q: float) -> float | None:
         if self._buffer:
             self.compress()
-        if not self._centroids:
+        count = self._tree.size()
+        if count == 0:
             return None
-        if len(self._centroids) == 1:
-            return self._centroids[0].mean
+
+        centroids = self._tree.to_list()
+        if count == 1:
+            return centroids[0].mean
 
         q = max(0.0, min(1.0, q))
         n = self.total_weight
         target = q * n
 
-        # Use Fenwick tree to find the centroid index in O(log n)
-        i, cumulative = self._fenwick_find(target)
-        # cumulative is the weight sum of centroids [0..i-1], i.e. weight
-        # before centroid i.
-        c = self._centroids[i]
+        # Use find_by_weight for O(log n) lookup
+        result = self._tree.find_by_weight(target, _weight_of)
+        if result is None:
+            return None
+
+        c, cumulative, i = result
 
         if i == 0:
             if target < c.weight / 2.0:
@@ -107,7 +162,7 @@ class TDigest:
                     return self.min
                 return self.min + (c.mean - self.min) * (target / (c.weight / 2.0))
 
-        if i == len(self._centroids) - 1:
+        if i == count - 1:
             if target > n - c.weight / 2.0:
                 if c.weight == 1:
                     return self.max
@@ -116,20 +171,21 @@ class TDigest:
             return c.mean
 
         mid = cumulative + c.weight / 2.0
-        next_c = self._centroids[i + 1]
+        # Need next centroid - get it from centroids list
+        next_c = centroids[i + 1]
         next_mid = cumulative + c.weight + next_c.weight / 2.0
 
         if target <= next_mid:
             frac = 0.5 if next_mid == mid else (target - mid) / (next_mid - mid)
             return c.mean + frac * (next_c.mean - c.mean)
 
-        # Fallback (should not normally be reached)
         return self.max
 
     def cdf(self, x: float) -> float | None:
         if self._buffer:
             self.compress()
-        if not self._centroids:
+        count = self._tree.size()
+        if count == 0:
             return None
         if x <= self.min:
             return 0.0
@@ -137,37 +193,44 @@ class TDigest:
             return 1.0
 
         n = self.total_weight
+        centroids = self._tree.to_list()
 
-        # Use bisect on centroid means for O(log n) position finding.
-        means = [c.mean for c in self._centroids]
+        # Binary search for position among centroid means
         # Find leftmost centroid whose mean >= x
-        pos = bisect.bisect_left(means, x)
+        lo, hi = 0, len(centroids)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if centroids[mid].mean < x:
+                lo = mid + 1
+            else:
+                hi = mid
+        pos = lo
 
-        # If x is before the first centroid mean
+        # Compute cumulative weight before pos using a running sum
+        # (we already have the centroids list)
+        cum_weights = [0.0] * (len(centroids) + 1)
+        for j in range(len(centroids)):
+            cum_weights[j + 1] = cum_weights[j] + centroids[j].weight
+
         if pos == 0:
-            c = self._centroids[0]
+            c = centroids[0]
             inner_w = c.weight / 2.0
             frac = 1.0 if c.mean == self.min else (x - self.min) / (c.mean - self.min)
             return (inner_w * frac) / n
 
-        # If x is at or beyond the last centroid mean
-        if pos >= len(self._centroids):
-            c = self._centroids[-1]
-            cumulative = self._fenwick_prefix_sum(len(self._centroids) - 1) - c.weight
+        if pos >= len(centroids):
+            c = centroids[-1]
+            cumulative = cum_weights[len(centroids) - 1]
             inner_w = c.weight / 2.0
             right_w = n - cumulative - c.weight / 2.0
             frac = 0.0 if self.max == c.mean else (x - c.mean) / (self.max - c.mean)
             return (cumulative + c.weight / 2.0 + right_w * frac) / n
 
-        # x falls between centroid pos-1 and centroid pos (or equals means[pos])
         i = pos - 1
-        c = self._centroids[i]
-        next_c = self._centroids[pos]
+        c = centroids[i]
+        next_c = centroids[pos]
+        cumulative = cum_weights[i]
 
-        # Compute cumulative weight before centroid i using Fenwick tree
-        cumulative = self._fenwick_prefix_sum(i) - c.weight
-
-        # Handle edge cases for first centroid
         if i == 0 and x < c.mean:
             inner_w = c.weight / 2.0
             frac = 1.0 if c.mean == self.min else (x - self.min) / (c.mean - self.min)
@@ -175,8 +238,7 @@ class TDigest:
         if i == 0 and x == c.mean:
             return (c.weight / 2.0) / n
 
-        # Handle last centroid
-        if pos == len(self._centroids) - 1 and x > next_c.mean:
+        if pos == len(centroids) - 1 and x > next_c.mean:
             next_cumulative = cumulative + c.weight
             inner_w = next_c.weight / 2.0
             right_w = n - next_cumulative - next_c.weight / 2.0
@@ -184,80 +246,28 @@ class TDigest:
             return (next_cumulative + next_c.weight / 2.0 + right_w * frac) / n
 
         next_cumulative = cumulative + c.weight
-        mid = cumulative + c.weight / 2.0
+        mid_w = cumulative + c.weight / 2.0
         next_mid = next_cumulative + next_c.weight / 2.0
 
         if x < next_c.mean:
             if c.mean == next_c.mean:
-                return (mid + (next_mid - mid) / 2.0) / n
+                return (mid_w + (next_mid - mid_w) / 2.0) / n
             frac = (x - c.mean) / (next_c.mean - c.mean)
-            return (mid + frac * (next_mid - mid)) / n
+            return (mid_w + frac * (next_mid - mid_w)) / n
 
-        # x == next_c.mean
-        return (next_mid) / n
+        return next_mid / n
 
     def centroid_count(self) -> int:
         if self._buffer:
             self.compress()
-        return len(self._centroids)
+        return self._tree.size()
 
     # -- internals --------------------------------------------------------
 
     def _flush_for_merge(self) -> list[Centroid]:
         if self._buffer:
             self.compress()
-        return self._centroids
-
-    def _fenwick_build(self) -> None:
-        """Build a Fenwick tree over centroid weights for O(log n) prefix sums."""
-        n = len(self._centroids)
-        self._fenwick = [0.0] * (n + 1)  # 1-indexed
-        for i, c in enumerate(self._centroids):
-            j = i + 1  # 1-indexed
-            self._fenwick[j] += c.weight
-            parent = j + (j & -j)
-            if parent <= n:
-                self._fenwick[parent] += self._fenwick[j]
-
-    def _fenwick_prefix_sum(self, i: int) -> float:
-        """Return the sum of weights for centroids [0..i] (0-indexed, inclusive)."""
-        s = 0.0
-        j = i + 1  # convert to 1-indexed
-        while j > 0:
-            s += self._fenwick[j]
-            j -= j & -j
-        return s
-
-    def _fenwick_find(self, target: float) -> tuple[int, float]:
-        """Find the centroid index where cumulative weight reaches target.
-
-        Returns (index, cumulative_weight_before_index) where the centroid at
-        index is the first whose cumulative weight (up to and including its
-        midpoint) could contain the target.
-
-        Uses O(log n) bit-climbing on the Fenwick tree.
-        """
-        n = len(self._centroids)
-        pos = 0  # 1-indexed position being built
-        cumulative = 0.0  # weight sum for centroids before pos
-
-        # Find the largest power of 2 <= n
-        bit = 1
-        while bit * 2 <= n:
-            bit *= 2
-
-        while bit > 0:
-            next_pos = pos + bit
-            if next_pos <= n and cumulative + self._fenwick[next_pos] < target:
-                cumulative += self._fenwick[next_pos]
-                pos = next_pos
-            bit >>= 1
-
-        # pos is now the 1-indexed position of the last centroid whose prefix
-        # sum is < target.  The answer centroid is at 0-indexed pos.
-        idx = min(pos, n - 1)
-        # cumulative is the weight sum of centroids [0..idx-1]
-        return idx, cumulative
+        return self._tree.to_list()
 
     def _k(self, q: float) -> float:
         return (self.delta / (2.0 * math.pi)) * math.asin(2.0 * q - 1.0)

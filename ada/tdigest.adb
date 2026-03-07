@@ -1,6 +1,7 @@
 --  tdigest.adb
 --
 --  Dunning t-digest -- merging digest variant with K_1 scale function.
+--  Uses an array-backed 2-3-4 tree with four-component monoidal measures.
 
 with Ada.Numerics.Long_Elementary_Functions;
 
@@ -10,6 +11,53 @@ package body TDigest is
 
    Pi : constant Long_Float := 3.14159_26535_89793_23846;
 
+   --  Rename the tree's Key_Array for convenience
+   subtype Tree_Key_Array is Centroid_Tree.Key_Array;
+
+   --  ---------------------------------------------------------------
+   --  Measure operations (generic formals for Tree234)
+   --  ---------------------------------------------------------------
+
+   function Measure_One (C : Centroid) return Td_Measure is
+   begin
+      return (Weight          => C.Weight,
+              Count           => 1,
+              Max_Mean        => C.Mean,
+              Mean_Weight_Sum => C.Mean * C.Weight);
+   end Measure_One;
+
+   function Combine_Measures (A, B : Td_Measure) return Td_Measure is
+   begin
+      return (Weight          => A.Weight + B.Weight,
+              Count           => A.Count + B.Count,
+              Max_Mean        => Long_Float'Max (A.Max_Mean, B.Max_Mean),
+              Mean_Weight_Sum => A.Mean_Weight_Sum + B.Mean_Weight_Sum);
+   end Combine_Measures;
+
+   function Identity_Measure return Td_Measure is
+   begin
+      return (Weight          => 0.0,
+              Count           => 0,
+              Max_Mean        => Long_Float'First,
+              Mean_Weight_Sum => 0.0);
+   end Identity_Measure;
+
+   function Compare_Centroids (A, B : Centroid) return Integer is
+   begin
+      if A.Mean < B.Mean then
+         return -1;
+      elsif A.Mean > B.Mean then
+         return 1;
+      else
+         return 0;
+      end if;
+   end Compare_Centroids;
+
+   function Measure_Weight (M : Td_Measure) return Long_Float is
+   begin
+      return M.Weight;
+   end Measure_Weight;
+
    --  ---------------------------------------------------------------
    --  Internal helpers
    --  ---------------------------------------------------------------
@@ -18,7 +66,6 @@ package body TDigest is
    function K (Q : Long_Float; D : Long_Float) return Long_Float is
       Arg : Long_Float := 2.0 * Q - 1.0;
    begin
-      --  Clamp argument to [-1, 1] for numerical safety.
       if Arg < -1.0 then
          Arg := -1.0;
       elsif Arg > 1.0 then
@@ -28,23 +75,23 @@ package body TDigest is
    end K;
 
    --  In-place insertion sort of Arr(First .. Last) by Mean.
-   procedure Sort_By_Mean (Arr   : in out Centroid_Array;
+   procedure Sort_By_Mean (Arr   : in out Tree_Key_Array;
                            First : Positive;
                            Last  : Natural) is
-      Key : Centroid;
-      J   : Integer;  --  Integer so it can go below First (= 0).
+      Tmp : Centroid;
+      J   : Integer;
    begin
       if Last <= First then
          return;
       end if;
       for I in First + 1 .. Last loop
-         Key := Arr (I);
+         Tmp := Arr (I);
          J := I - 1;
-         while J >= First and then Arr (J).Mean > Key.Mean loop
+         while J >= First and then Arr (J).Mean > Tmp.Mean loop
             Arr (J + 1) := Arr (J);
             J := J - 1;
          end loop;
-         Arr (J + 1) := Key;
+         Arr (J + 1) := Tmp;
       end loop;
    end Sort_By_Mean;
 
@@ -93,12 +140,13 @@ package body TDigest is
    end Add;
 
    procedure Compress (TD : in out T_Digest) is
-      --  Temporary workspace: centroids + buffer combined.
-      Total : constant Natural := TD.Num_Centroids + TD.Buf_Count;
+      Tree_Size : constant Natural := Centroid_Tree.Size (TD.Tree_Data);
+      Total     : constant Natural := Tree_Size + TD.Buf_Count;
 
-      subtype Work_Range is Positive range 1 .. Max_Centroids + Max_Buffer;
-      All_Items : Centroid_Array (Work_Range);
-      New_Items : Centroid_Array (Work_Range);
+      Max_Work : constant Natural := Natural'Max (Total, 1);
+      All_Items : Tree_Key_Array (1 .. Max_Work);
+      All_Count : Natural := 0;
+      New_Items : Tree_Key_Array (1 .. Max_Work);
       New_Count : Natural := 0;
 
       Weight_So_Far : Long_Float := 0.0;
@@ -113,133 +161,141 @@ package body TDigest is
          return;
       end if;
 
-      --  Combine existing centroids and buffer.
-      for I in 1 .. TD.Num_Centroids loop
-         All_Items (I) := TD.Centroids (I);
-      end loop;
+      --  Collect existing centroids from tree
+      Centroid_Tree.Collect (TD.Tree_Data, All_Items, All_Count);
+
+      --  Append buffer entries
       for I in 1 .. TD.Buf_Count loop
-         All_Items (TD.Num_Centroids + I) := TD.Buf (I);
+         All_Items (All_Count + I) := TD.Buf (I);
       end loop;
+      All_Count := All_Count + TD.Buf_Count;
       TD.Buf_Count := 0;
 
-      --  Sort by mean.
-      Sort_By_Mean (All_Items, 1, Total);
+      --  Sort by mean
+      Sort_By_Mean (All_Items, 1, All_Count);
 
       N := TD.Total_Weight;
 
-      --  Start the first new centroid.
+      --  Start the first new centroid
       New_Count := 1;
       New_Items (1) := All_Items (1);
 
-      for I in 2 .. Total loop
+      for I in 2 .. All_Count loop
          Proposed := New_Items (New_Count).Weight + All_Items (I).Weight;
          Q0 := Weight_So_Far / N;
          Q1 := (Weight_So_Far + Proposed) / N;
 
-         if (Proposed <= 1.0 and then Total > 1)
+         if (Proposed <= 1.0 and then All_Count > 1)
            or else (K (Q1, TD.Compression) - K (Q0, TD.Compression) <= 1.0)
          then
-            --  Merge into current centroid.
             Merge_Centroid (New_Items (New_Count), All_Items (I));
          else
-            --  Start a new centroid.
             Weight_So_Far := Weight_So_Far + New_Items (New_Count).Weight;
             New_Count := New_Count + 1;
             New_Items (New_Count) := All_Items (I);
          end if;
       end loop;
 
-      --  Copy result back.
-      TD.Num_Centroids := New_Count;
-      for I in 1 .. New_Count loop
-         TD.Centroids (I) := New_Items (I);
-      end loop;
+      --  Rebuild tree from sorted merged centroids
+      Centroid_Tree.Build_From_Sorted
+        (TD.Tree_Data, New_Items (1 .. New_Count));
    end Compress;
 
    function Quantile (TD : in out T_Digest;
                       Q  : Long_Float) return Long_Float is
-      QQ       : Long_Float := Q;
-      N        : Long_Float;
-      Target   : Long_Float;
-      Cumul    : Long_Float := 0.0;
-      Mid      : Long_Float;
-      Next_Mid : Long_Float;
-      Frac     : Long_Float;
+      QQ        : Long_Float := Q;
+      N         : Long_Float;
+      Target    : Long_Float;
+      Cumul     : Long_Float := 0.0;
+      Mid       : Long_Float;
+      Next_Mid  : Long_Float;
+      Frac      : Long_Float;
+      Sz        : Natural;
    begin
-      --  Flush buffer.
       if TD.Buf_Count > 0 then
          Compress (TD);
       end if;
 
-      if TD.Num_Centroids = 0 then
+      Sz := Centroid_Tree.Size (TD.Tree_Data);
+
+      if Sz = 0 then
          return 0.0;
       end if;
-      if TD.Num_Centroids = 1 then
-         return TD.Centroids (1).Mean;
-      end if;
 
-      --  Clamp Q.
-      if QQ < 0.0 then
-         QQ := 0.0;
-      elsif QQ > 1.0 then
-         QQ := 1.0;
-      end if;
+      --  Collect centroids from tree
+      declare
+         Arr   : Tree_Key_Array (1 .. Sz);
+         Count : Natural;
+      begin
+         Centroid_Tree.Collect (TD.Tree_Data, Arr, Count);
 
-      N := TD.Total_Weight;
-      Target := QQ * N;
-
-      for I in 1 .. TD.Num_Centroids loop
-         Mid := Cumul + TD.Centroids (I).Weight / 2.0;
-
-         --  Left boundary: interpolate between Min_Val and first centroid.
-         if I = 1 then
-            if Target < TD.Centroids (I).Weight / 2.0 then
-               if TD.Centroids (I).Weight = 1.0 then
-                  return TD.Min_Val;
-               end if;
-               return TD.Min_Val
-                 + (TD.Centroids (I).Mean - TD.Min_Val)
-                   * (Target / (TD.Centroids (I).Weight / 2.0));
-            end if;
+         if Count = 1 then
+            return Arr (1).Mean;
          end if;
 
-         --  Right boundary: interpolate between last centroid and Max_Val.
-         if I = TD.Num_Centroids then
-            declare
-               Remaining : constant Long_Float :=
-                 N - TD.Centroids (I).Weight / 2.0;
-            begin
-               if Target > Remaining then
-                  if TD.Centroids (I).Weight = 1.0 then
-                     return TD.Max_Val;
+         if QQ < 0.0 then
+            QQ := 0.0;
+         elsif QQ > 1.0 then
+            QQ := 1.0;
+         end if;
+
+         N := TD.Total_Weight;
+         Target := QQ * N;
+
+         Cumul := 0.0;
+         for I in 1 .. Count loop
+            Mid := Cumul + Arr (I).Weight / 2.0;
+
+            --  Left boundary
+            if I = 1 then
+               if Target < Arr (I).Weight / 2.0 then
+                  if Arr (I).Weight = 1.0 then
+                     return TD.Min_Val;
                   end if;
-                  return TD.Centroids (I).Mean
-                    + (TD.Max_Val - TD.Centroids (I).Mean)
-                      * ((Target - Remaining)
-                         / (TD.Centroids (I).Weight / 2.0));
+                  return TD.Min_Val
+                    + (Arr (I).Mean - TD.Min_Val)
+                      * (Target / (Arr (I).Weight / 2.0));
                end if;
-            end;
-            return TD.Centroids (I).Mean;
-         end if;
-
-         --  Middle: linear interpolation between adjacent centroid midpoints.
-         Next_Mid := Cumul + TD.Centroids (I).Weight
-                     + TD.Centroids (I + 1).Weight / 2.0;
-
-         if Target <= Next_Mid then
-            if Next_Mid = Mid then
-               Frac := 0.5;
-            else
-               Frac := (Target - Mid) / (Next_Mid - Mid);
             end if;
-            return TD.Centroids (I).Mean
-              + Frac * (TD.Centroids (I + 1).Mean - TD.Centroids (I).Mean);
-         end if;
 
-         Cumul := Cumul + TD.Centroids (I).Weight;
-      end loop;
+            --  Right boundary
+            if I = Count then
+               declare
+                  Remaining : constant Long_Float :=
+                    N - Arr (I).Weight / 2.0;
+               begin
+                  if Target > Remaining then
+                     if Arr (I).Weight = 1.0 then
+                        return TD.Max_Val;
+                     end if;
+                     return Arr (I).Mean
+                       + (TD.Max_Val - Arr (I).Mean)
+                         * ((Target - Remaining)
+                            / (Arr (I).Weight / 2.0));
+                  end if;
+               end;
+               return Arr (I).Mean;
+            end if;
 
-      return TD.Max_Val;
+            --  Middle: linear interpolation
+            Next_Mid := Cumul + Arr (I).Weight
+                        + Arr (I + 1).Weight / 2.0;
+
+            if Target <= Next_Mid then
+               if Next_Mid = Mid then
+                  Frac := 0.5;
+               else
+                  Frac := (Target - Mid) / (Next_Mid - Mid);
+               end if;
+               return Arr (I).Mean
+                 + Frac * (Arr (I + 1).Mean - Arr (I).Mean);
+            end if;
+
+            Cumul := Cumul + Arr (I).Weight;
+         end loop;
+
+         return TD.Max_Val;
+      end;
    end Quantile;
 
    function CDF (TD : in out T_Digest;
@@ -252,13 +308,15 @@ package body TDigest is
       Frac     : Long_Float;
       Inner_W  : Long_Float;
       Right_W  : Long_Float;
+      Sz       : Natural;
    begin
-      --  Flush buffer.
       if TD.Buf_Count > 0 then
          Compress (TD);
       end if;
 
-      if TD.Num_Centroids = 0 then
+      Sz := Centroid_Tree.Size (TD.Tree_Data);
+
+      if Sz = 0 then
          return 0.0;
       end if;
       if X <= TD.Min_Val then
@@ -268,75 +326,94 @@ package body TDigest is
          return 1.0;
       end if;
 
-      N := TD.Total_Weight;
+      declare
+         Arr   : Tree_Key_Array (1 .. Sz);
+         Count : Natural;
+      begin
+         Centroid_Tree.Collect (TD.Tree_Data, Arr, Count);
 
-      for I in 1 .. TD.Num_Centroids loop
-         --  Left boundary.
-         if I = 1 then
-            if X < TD.Centroids (I).Mean then
-               Inner_W := TD.Centroids (I).Weight / 2.0;
-               if TD.Centroids (I).Mean = TD.Min_Val then
-                  Frac := 1.0;
-               else
-                  Frac := (X - TD.Min_Val)
-                          / (TD.Centroids (I).Mean - TD.Min_Val);
+         N := TD.Total_Weight;
+         Cumul := 0.0;
+
+         for I in 1 .. Count loop
+            --  Left boundary
+            if I = 1 then
+               if X < Arr (I).Mean then
+                  Inner_W := Arr (I).Weight / 2.0;
+                  if Arr (I).Mean = TD.Min_Val then
+                     Frac := 1.0;
+                  else
+                     Frac := (X - TD.Min_Val)
+                             / (Arr (I).Mean - TD.Min_Val);
+                  end if;
+                  return (Inner_W * Frac) / N;
+               elsif X = Arr (I).Mean then
+                  return (Arr (I).Weight / 2.0) / N;
                end if;
-               return (Inner_W * Frac) / N;
-            elsif X = TD.Centroids (I).Mean then
-               return (TD.Centroids (I).Weight / 2.0) / N;
             end if;
-         end if;
 
-         --  Right boundary.
-         if I = TD.Num_Centroids then
-            if X > TD.Centroids (I).Mean then
-               Inner_W := TD.Centroids (I).Weight / 2.0;
-               Right_W := N - Cumul - TD.Centroids (I).Weight / 2.0;
-               if TD.Max_Val = TD.Centroids (I).Mean then
-                  Frac := 0.0;
+            --  Right boundary
+            if I = Count then
+               if X > Arr (I).Mean then
+                  Inner_W := Arr (I).Weight / 2.0;
+                  Right_W := N - Cumul - Arr (I).Weight / 2.0;
+                  if TD.Max_Val = Arr (I).Mean then
+                     Frac := 0.0;
+                  else
+                     Frac := (X - Arr (I).Mean)
+                             / (TD.Max_Val - Arr (I).Mean);
+                  end if;
+                  return (Cumul + Arr (I).Weight / 2.0
+                          + Right_W * Frac) / N;
                else
-                  Frac := (X - TD.Centroids (I).Mean)
-                          / (TD.Max_Val - TD.Centroids (I).Mean);
+                  return (Cumul + Arr (I).Weight / 2.0) / N;
                end if;
-               return (Cumul + TD.Centroids (I).Weight / 2.0
-                       + Right_W * Frac) / N;
-            else
-               return (Cumul + TD.Centroids (I).Weight / 2.0) / N;
             end if;
-         end if;
 
-         --  Middle: interpolate between adjacent centroid midpoints.
-         Mid := Cumul + TD.Centroids (I).Weight / 2.0;
-         Next_Cum := Cumul + TD.Centroids (I).Weight;
-         Next_Mid := Next_Cum + TD.Centroids (I + 1).Weight / 2.0;
+            --  Middle
+            Mid := Cumul + Arr (I).Weight / 2.0;
+            Next_Cum := Cumul + Arr (I).Weight;
+            Next_Mid := Next_Cum + Arr (I + 1).Weight / 2.0;
 
-         if X < TD.Centroids (I + 1).Mean then
-            if TD.Centroids (I).Mean = TD.Centroids (I + 1).Mean then
-               return (Mid + (Next_Mid - Mid) / 2.0) / N;
+            if X < Arr (I + 1).Mean then
+               if Arr (I).Mean = Arr (I + 1).Mean then
+                  return (Mid + (Next_Mid - Mid) / 2.0) / N;
+               end if;
+               Frac := (X - Arr (I).Mean)
+                       / (Arr (I + 1).Mean - Arr (I).Mean);
+               return (Mid + Frac * (Next_Mid - Mid)) / N;
             end if;
-            Frac := (X - TD.Centroids (I).Mean)
-                    / (TD.Centroids (I + 1).Mean - TD.Centroids (I).Mean);
-            return (Mid + Frac * (Next_Mid - Mid)) / N;
-         end if;
 
-         Cumul := Cumul + TD.Centroids (I).Weight;
-      end loop;
+            Cumul := Cumul + Arr (I).Weight;
+         end loop;
 
-      return 1.0;
+         return 1.0;
+      end;
    end CDF;
 
    procedure Merge (TD    : in out T_Digest;
                     Other : in out T_Digest) is
+      Other_Sz : Natural;
    begin
-      --  Flush Other's buffer.
+      --  Flush Other's buffer
       if Other.Buf_Count > 0 then
          Compress (Other);
       end if;
 
-      --  Add each of Other's centroids as buffered values in TD.
-      for I in 1 .. Other.Num_Centroids loop
-         Add (TD, Other.Centroids (I).Mean, Other.Centroids (I).Weight);
-      end loop;
+      Other_Sz := Centroid_Tree.Size (Other.Tree_Data);
+
+      --  Collect Other's centroids and add them to TD
+      if Other_Sz > 0 then
+         declare
+            Arr   : Tree_Key_Array (1 .. Other_Sz);
+            Count : Natural;
+         begin
+            Centroid_Tree.Collect (Other.Tree_Data, Arr, Count);
+            for I in 1 .. Count loop
+               Add (TD, Arr (I).Mean, Arr (I).Weight);
+            end loop;
+         end;
+      end if;
    end Merge;
 
    function Centroid_Count (TD : in out T_Digest) return Natural is
@@ -344,7 +421,7 @@ package body TDigest is
       if TD.Buf_Count > 0 then
          Compress (TD);
       end if;
-      return TD.Num_Centroids;
+      return Centroid_Tree.Size (TD.Tree_Data);
    end Centroid_Count;
 
 end TDigest;

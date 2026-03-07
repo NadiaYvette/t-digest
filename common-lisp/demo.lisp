@@ -1,6 +1,7 @@
 ;;;; demo.lisp -- Demo / self-test for the t-digest library
 ;;;; Run with: sbcl --script demo.lisp
 
+(load (merge-pathnames "tree234.lisp" *load-truename*))
 (load (merge-pathnames "tdigest.lisp" *load-truename*))
 
 (defun main ()

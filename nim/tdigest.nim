@@ -1,7 +1,9 @@
 # Dunning t-digest for online quantile estimation.
 # Merging digest variant with K_1 (arcsine) scale function.
+# Uses an array-backed 2-3-4 tree with monoidal measures.
 
 import math, algorithm
+import tree234
 
 const
   DefaultDelta* = 100.0
@@ -12,19 +14,41 @@ type
     mean*: float
     weight*: float
 
+  TdMeasure* = object
+    weight*: float
+    count*: int
+    maxMean*: float
+    meanWeightSum*: float
+
   TDigest* = ref object
     delta*: float
-    centroids: seq[Centroid]
+    tree: Tree234[Centroid, TdMeasure]
     buffer: seq[Centroid]
     totalWeight*: float
     minVal*: float
     maxVal*: float
     bufferCap: int
 
+proc centroidMeasure(c: Centroid): TdMeasure {.noSideEffect.} =
+  TdMeasure(weight: c.weight, count: 1, maxMean: c.mean,
+      meanWeightSum: c.mean * c.weight)
+
+proc combineMeasure(a, b: TdMeasure): TdMeasure {.noSideEffect.} =
+  TdMeasure(weight: a.weight + b.weight, count: a.count + b.count,
+      maxMean: max(a.maxMean, b.maxMean),
+      meanWeightSum: a.meanWeightSum + b.meanWeightSum)
+
+proc identityMeasure(): TdMeasure {.noSideEffect.} =
+  TdMeasure(weight: 0, count: 0, maxMean: NegInf, meanWeightSum: 0)
+
+proc compareCentroid(a, b: Centroid): int {.noSideEffect.} =
+  cmp(a.mean, b.mean)
+
 proc newTDigest*(delta: float = DefaultDelta): TDigest =
   TDigest(
     delta: delta,
-    centroids: @[],
+    tree: newTree234[Centroid, TdMeasure](
+      centroidMeasure, combineMeasure, identityMeasure, compareCentroid),
     buffer: @[],
     totalWeight: 0.0,
     minVal: Inf,
@@ -36,10 +60,13 @@ proc k(td: TDigest, q: float): float =
   (td.delta / (2.0 * PI)) * arcsin(2.0 * q - 1.0)
 
 proc compress*(td: TDigest) =
-  if td.buffer.len == 0 and td.centroids.len <= 1:
+  if td.buffer.len == 0 and td.tree.size() <= 1:
     return
 
-  var all = td.centroids & td.buffer
+  # Collect all centroids from tree and buffer
+  var all: seq[Centroid] = @[]
+  td.tree.collect(all)
+  all.add(td.buffer)
   td.buffer.setLen(0)
   all.sort(proc(a, b: Centroid): int = cmp(a.mean, b.mean))
 
@@ -61,7 +88,8 @@ proc compress*(td: TDigest) =
       weightSoFar += newCentroids[^1].weight
       newCentroids.add(Centroid(mean: all[i].mean, weight: all[i].weight))
 
-  td.centroids = newCentroids
+  # Rebuild tree from sorted merged centroids
+  td.tree.buildFromSorted(newCentroids)
 
 proc add*(td: TDigest, value: float, weight: float = 1.0) =
   td.buffer.add(Centroid(mean: value, weight: weight))
@@ -73,16 +101,23 @@ proc add*(td: TDigest, value: float, weight: float = 1.0) =
 
 proc quantile*(td: TDigest, q: float): float =
   if td.buffer.len > 0: td.compress()
-  if td.centroids.len == 0: return NaN
-  if td.centroids.len == 1: return td.centroids[0].mean
+  if td.tree.size() == 0: return NaN
+  if td.tree.size() == 1:
+    var centroids: seq[Centroid] = @[]
+    td.tree.collect(centroids)
+    return centroids[0].mean
 
   let q = clamp(q, 0.0, 1.0)
   let n = td.totalWeight
   let target = q * n
 
+  # Collect centroids for interpolation
+  var centroids: seq[Centroid] = @[]
+  td.tree.collect(centroids)
+
   var cumulative = 0.0
-  for i in 0 ..< td.centroids.len:
-    let c = td.centroids[i]
+  for i in 0 ..< centroids.len:
+    let c = centroids[i]
     let mid = cumulative + c.weight / 2.0
 
     # Left boundary
@@ -91,7 +126,7 @@ proc quantile*(td: TDigest, q: float): float =
       return td.minVal + (c.mean - td.minVal) * (target / (c.weight / 2.0))
 
     # Right boundary
-    if i == td.centroids.len - 1:
+    if i == centroids.len - 1:
       if target > n - c.weight / 2.0:
         if c.weight == 1.0: return td.maxVal
         let remaining = n - c.weight / 2.0
@@ -99,7 +134,7 @@ proc quantile*(td: TDigest, q: float): float =
       return c.mean
 
     # Interpolation between centroids
-    let nextC = td.centroids[i + 1]
+    let nextC = centroids[i + 1]
     let nextMid = cumulative + c.weight + nextC.weight / 2.0
 
     if target <= nextMid:
@@ -113,15 +148,19 @@ proc quantile*(td: TDigest, q: float): float =
 
 proc cdf*(td: TDigest, x: float): float =
   if td.buffer.len > 0: td.compress()
-  if td.centroids.len == 0: return NaN
+  if td.tree.size() == 0: return NaN
   if x <= td.minVal: return 0.0
   if x >= td.maxVal: return 1.0
 
   let n = td.totalWeight
   var cumulative = 0.0
 
-  for i in 0 ..< td.centroids.len:
-    let c = td.centroids[i]
+  # Collect centroids for interpolation
+  var centroids: seq[Centroid] = @[]
+  td.tree.collect(centroids)
+
+  for i in 0 ..< centroids.len:
+    let c = centroids[i]
 
     if i == 0:
       if x < c.mean:
@@ -132,7 +171,7 @@ proc cdf*(td: TDigest, x: float): float =
       elif x == c.mean:
         return (c.weight / 2.0) / n
 
-    if i == td.centroids.len - 1:
+    if i == centroids.len - 1:
       if x > c.mean:
         let rightW = n - cumulative - c.weight / 2.0
         let frac = if td.maxVal == c.mean: 0.0
@@ -142,7 +181,7 @@ proc cdf*(td: TDigest, x: float): float =
         return (cumulative + c.weight / 2.0) / n
 
     let midVal = cumulative + c.weight / 2.0
-    let nextC = td.centroids[i + 1]
+    let nextC = centroids[i + 1]
     let nextCumulative = cumulative + c.weight
     let nextMid = nextCumulative + nextC.weight / 2.0
 
@@ -158,9 +197,11 @@ proc cdf*(td: TDigest, x: float): float =
 
 proc merge*(td: TDigest, other: TDigest) =
   if other.buffer.len > 0: other.compress()
-  for c in other.centroids:
+  var otherCentroids: seq[Centroid] = @[]
+  other.tree.collect(otherCentroids)
+  for c in otherCentroids:
     td.add(c.mean, c.weight)
 
 proc centroidCount*(td: TDigest): int =
   if td.buffer.len > 0: td.compress()
-  td.centroids.len
+  td.tree.size()

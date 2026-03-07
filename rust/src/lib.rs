@@ -2,8 +2,15 @@
 //!
 //! Merging digest variant with K1 (arcsine) scale function:
 //! k(q, delta) = (delta / (2*pi)) * asin(2*q - 1)
+//!
+//! Uses an array-backed 2-3-4 tree with monoidal measures for O(log n)
+//! quantile and CDF queries.
 
+pub mod tree234;
+
+use std::cmp::Ordering;
 use std::f64::consts::PI;
+use tree234::{Measured, Monoid, Tree234};
 
 /// A centroid representing a cluster of values.
 #[derive(Clone, Debug)]
@@ -12,24 +19,78 @@ pub struct Centroid {
     pub weight: f64,
 }
 
+/// Four-component monoidal measure for subtree aggregation.
+///
+/// Tracks total weight, count, maximum mean, and weighted mean sum
+/// across all centroids in a subtree.
+#[derive(Clone, Debug)]
+pub struct TdMeasure {
+    pub weight: f64,
+    pub count: usize,
+    pub max_mean: f64,
+    pub mean_weight_sum: f64,
+}
+
+impl Default for TdMeasure {
+    fn default() -> Self {
+        TdMeasure {
+            weight: 0.0,
+            count: 0,
+            max_mean: f64::NEG_INFINITY,
+            mean_weight_sum: 0.0,
+        }
+    }
+}
+
+impl Monoid for TdMeasure {
+    fn combine(&self, other: &Self) -> Self {
+        TdMeasure {
+            weight: self.weight + other.weight,
+            count: self.count + other.count,
+            max_mean: self.max_mean.max(other.max_mean),
+            mean_weight_sum: self.mean_weight_sum + other.mean_weight_sum,
+        }
+    }
+}
+
+impl Measured<TdMeasure> for Centroid {
+    fn measure(&self) -> TdMeasure {
+        TdMeasure {
+            weight: self.weight,
+            count: 1,
+            max_mean: self.mean,
+            mean_weight_sum: self.mean * self.weight,
+        }
+    }
+}
+
 const DEFAULT_DELTA: f64 = 100.0;
-const BUFFER_FACTOR: usize = 5;
+const AUTO_COMPRESS_FACTOR: usize = 3;
+
+/// Comparison function for centroids: order by mean, break ties by weight.
+fn cmp_centroids(a: &Centroid, b: &Centroid) -> Ordering {
+    a.mean
+        .partial_cmp(&b.mean)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| {
+            a.weight
+                .partial_cmp(&b.weight)
+                .unwrap_or(Ordering::Equal)
+        })
+}
 
 /// A merging t-digest data structure for online quantile estimation.
 ///
-/// Uses a Fenwick tree (binary indexed tree) over centroid weights for
-/// O(log n) quantile and CDF queries instead of linear scans.
-#[derive(Clone, Debug)]
+/// Uses a 2-3-4 tree with monoidal measures over centroid weights for
+/// O(log n) quantile and CDF queries.
+#[derive(Clone)]
 pub struct TDigest {
     delta: f64,
-    centroids: Vec<Centroid>,
-    buffer: Vec<Centroid>,
+    tree: Tree234<Centroid, TdMeasure>,
     total_weight: f64,
     min: f64,
     max: f64,
-    buffer_cap: usize,
-    /// Fenwick tree (1-indexed) over centroid weights for O(log n) prefix sums.
-    fenwick: Vec<f64>,
+    uncompressed_count: usize,
 }
 
 impl TDigest {
@@ -37,13 +98,11 @@ impl TDigest {
     pub fn new(delta: f64) -> Self {
         TDigest {
             delta,
-            centroids: Vec::new(),
-            buffer: Vec::new(),
+            tree: Tree234::new(),
             total_weight: 0.0,
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
-            buffer_cap: (delta as usize) * BUFFER_FACTOR,
-            fenwick: Vec::new(),
+            uncompressed_count: 0,
         }
     }
 
@@ -52,131 +111,75 @@ impl TDigest {
         Self::new(DEFAULT_DELTA)
     }
 
+    /// K1 (arcsine) scale function.
+    fn k(&self, q: f64) -> f64 {
+        (self.delta / (2.0 * PI)) * (2.0 * q - 1.0).asin()
+    }
+
     /// Adds a value with the given weight to the digest.
     pub fn add(&mut self, value: f64, weight: f64) {
-        self.buffer.push(Centroid {
-            mean: value,
-            weight,
-        });
-        self.total_weight += weight;
         if value < self.min {
             self.min = value;
         }
         if value > self.max {
             self.max = value;
         }
-        if self.buffer.len() >= self.buffer_cap {
+        self.total_weight += weight;
+
+        // Insert as a new centroid into the tree.
+        self.tree
+            .insert(Centroid { mean: value, weight }, &cmp_centroids);
+        self.uncompressed_count += 1;
+
+        // Auto-compress when too many uncompressed insertions.
+        if self.uncompressed_count >= AUTO_COMPRESS_FACTOR * (self.delta as usize) {
             self.compress();
         }
     }
 
-    /// K1 (arcsine) scale function.
-    fn k(&self, q: f64) -> f64 {
-        (self.delta / (2.0 * PI)) * (2.0 * q - 1.0).asin()
-    }
-
-    /// Merges the buffer into the centroid list using the greedy merge algorithm.
+    /// Merges the centroids using the greedy merge algorithm with K1 scale function.
     pub fn compress(&mut self) {
-        if self.buffer.is_empty() && self.centroids.len() <= 1 {
+        self.uncompressed_count = 0;
+
+        let all = self.tree.to_vec();
+        if all.len() <= 1 {
             return;
         }
 
-        let mut all = Vec::with_capacity(self.centroids.len() + self.buffer.len());
-        all.append(&mut self.centroids);
-        all.append(&mut self.buffer);
-        all.sort_by(|a, b| {
-            a.mean
-                .partial_cmp(&b.mean)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let all_len = all.len();
-        let mut new_centroids: Vec<Centroid> = Vec::with_capacity(all_len);
-        new_centroids.push(Centroid {
+        // Greedy merge: walk through sorted centroids, merging when K1 allows.
+        let mut merged: Vec<Centroid> = Vec::with_capacity(all.len());
+        merged.push(Centroid {
             mean: all[0].mean,
             weight: all[0].weight,
         });
         let mut weight_so_far: f64 = 0.0;
         let n = self.total_weight;
 
-        for i in 1..all_len {
-            let last_weight = new_centroids.last().unwrap().weight;
+        for i in 1..all.len() {
+            let last_weight = merged.last().unwrap().weight;
             let proposed = last_weight + all[i].weight;
             let q0 = weight_so_far / n;
             let q1 = (weight_so_far + proposed) / n;
 
-            if proposed <= 1.0 && all_len > 1 {
-                Self::merge_into_last(&mut new_centroids, &all[i]);
+            if proposed <= 1.0 && all.len() > 1 {
+                // Always merge singletons.
+                Self::merge_into_last(&mut merged, &all[i]);
             } else if self.k(q1) - self.k(q0) <= 1.0 {
-                Self::merge_into_last(&mut new_centroids, &all[i]);
+                Self::merge_into_last(&mut merged, &all[i]);
             } else {
-                weight_so_far += new_centroids.last().unwrap().weight;
-                new_centroids.push(Centroid {
+                weight_so_far += merged.last().unwrap().weight;
+                merged.push(Centroid {
                     mean: all[i].mean,
                     weight: all[i].weight,
                 });
             }
         }
 
-        self.centroids = new_centroids;
-        self.fenwick_build();
-    }
-
-    /// Builds the Fenwick tree from the current centroid weights.
-    /// Called at the end of every compress().
-    fn fenwick_build(&mut self) {
-        let n = self.centroids.len();
-        // 1-indexed Fenwick tree of size n+1
-        self.fenwick = vec![0.0; n + 1];
-        for i in 0..n {
-            self.fenwick_update(i, self.centroids[i].weight);
+        // Rebuild tree from merged centroids.
+        self.tree.clear();
+        for c in merged {
+            self.tree.insert(c, &cmp_centroids);
         }
-    }
-
-    /// Adds `delta` to position `i` (0-indexed) in the Fenwick tree.
-    fn fenwick_update(&mut self, i: usize, delta: f64) {
-        let mut j = i + 1; // 1-indexed
-        while j < self.fenwick.len() {
-            self.fenwick[j] += delta;
-            j += j & j.wrapping_neg(); // j += lowest set bit
-        }
-    }
-
-    /// Returns the prefix sum of weights for centroids 0..=i (0-indexed).
-    fn fenwick_prefix_sum(&self, i: usize) -> f64 {
-        let mut sum = 0.0;
-        let mut j = i + 1; // 1-indexed
-        while j > 0 {
-            sum += self.fenwick[j];
-            j -= j & j.wrapping_neg(); // remove lowest set bit
-        }
-        sum
-    }
-
-    /// Finds the smallest index `i` such that prefix_sum(0..=i) >= target.
-    /// Uses O(log n) tree descent instead of linear scan.
-    fn fenwick_find(&self, target: f64) -> usize {
-        let n = self.centroids.len();
-        if n == 0 {
-            return 0;
-        }
-        // Find the highest power of 2 <= n
-        let mut bit = 1;
-        while bit * 2 <= n {
-            bit *= 2;
-        }
-        let mut pos: usize = 0;
-        let mut remaining = target;
-        while bit > 0 {
-            let next = pos + bit;
-            if next <= n && self.fenwick[next] < remaining {
-                remaining -= self.fenwick[next];
-                pos = next;
-            }
-            bit >>= 1;
-        }
-        // pos is now the 0-indexed result (pos was 0-based position after last step)
-        pos // 0-indexed: prefix_sum(0..=pos) >= target
     }
 
     /// Merges a centroid into the last centroid in the list.
@@ -188,104 +191,104 @@ impl TDigest {
     }
 
     /// Returns the estimated value at quantile q (0 <= q <= 1).
-    ///
-    /// Uses the Fenwick tree for O(log n) centroid lookup.
     pub fn quantile(&mut self, q: f64) -> Option<f64> {
-        if !self.buffer.is_empty() {
+        if self.uncompressed_count > 0 {
             self.compress();
         }
-        if self.centroids.is_empty() {
+
+        let centroids = self.tree.to_vec();
+        if centroids.is_empty() {
             return None;
         }
-        if self.centroids.len() == 1 {
-            return Some(self.centroids[0].mean);
+        if centroids.len() == 1 {
+            return Some(centroids[0].mean);
         }
 
         let q = q.clamp(0.0, 1.0);
         let n = self.total_weight;
         let target = q * n;
-        let count = self.centroids.len();
+        let count = centroids.len();
 
-        // Handle first centroid boundary
-        let first_w = self.centroids[0].weight;
+        // Handle first centroid boundary.
+        let first_w = centroids[0].weight;
         if target < first_w / 2.0 {
             if first_w == 1.0 {
                 return Some(self.min);
             }
-            return Some(
-                self.min + (self.centroids[0].mean - self.min) * (target / (first_w / 2.0)),
-            );
+            return Some(self.min + (centroids[0].mean - self.min) * (target / (first_w / 2.0)));
         }
 
-        // Handle last centroid boundary
-        let last_w = self.centroids[count - 1].weight;
+        // Handle last centroid boundary.
+        let last_w = centroids[count - 1].weight;
         if target > n - last_w / 2.0 {
             if last_w == 1.0 {
                 return Some(self.max);
             }
             let remaining = n - last_w / 2.0;
             return Some(
-                self.centroids[count - 1].mean
-                    + (self.max - self.centroids[count - 1].mean)
+                centroids[count - 1].mean
+                    + (self.max - centroids[count - 1].mean)
                         * ((target - remaining) / (last_w / 2.0)),
             );
         }
 
-        // Use Fenwick tree to find the centroid whose cumulative weight
-        // neighborhood contains the target. We want the centroid i such that
-        // mid_i <= target <= mid_{i+1}, where mid_i = cumulative(0..i) + w_i/2.
-        //
-        // fenwick_find(target) gives the smallest index whose prefix sum >= target.
-        // We need the index where the midpoint bracket contains target.
-        let i = self.fenwick_find(target);
-        // Clamp to valid range for interpolation (need i and i+1)
-        let i = if i >= count - 1 { count - 2 } else { i };
+        // Walk through centroids to find the bracket containing target.
+        // We use the tree's find_by_weight for efficient lookup.
+        let weight_fn = |m: &TdMeasure| m.weight;
+        let key_weight_fn = |c: &Centroid| c.weight;
 
-        let cumulative = if i == 0 {
-            0.0
-        } else {
-            self.fenwick_prefix_sum(i - 1)
-        };
-        let c_weight = self.centroids[i].weight;
-        let c_mean = self.centroids[i].mean;
-        let mid = cumulative + c_weight / 2.0;
-        let next_c = &self.centroids[i + 1];
-        let next_mid = cumulative + c_weight + next_c.weight / 2.0;
+        if let Some((_key, _cum_before, idx)) =
+            self.tree.find_by_weight(target, &weight_fn, &key_weight_fn)
+        {
+            // idx is the 0-based index in sorted order.
+            let i = idx.min(count - 2); // clamp for interpolation
 
-        if target <= mid && i > 0 {
-            // Target is before mid_i; go back one centroid
-            let prev_cumulative = if i <= 1 {
-                0.0
-            } else {
-                self.fenwick_prefix_sum(i - 2)
-            };
-            let prev = &self.centroids[i - 1];
-            let prev_mid = prev_cumulative + prev.weight / 2.0;
-            let frac = if mid == prev_mid {
+            let mut cumulative = 0.0;
+            for j in 0..i {
+                cumulative += centroids[j].weight;
+            }
+
+            let c_weight = centroids[i].weight;
+            let c_mean = centroids[i].mean;
+            let mid = cumulative + c_weight / 2.0;
+            let next_c = &centroids[i + 1];
+            let next_mid = cumulative + c_weight + next_c.weight / 2.0;
+
+            if target <= mid && i > 0 {
+                let mut prev_cumulative = 0.0;
+                for j in 0..(i - 1) {
+                    prev_cumulative += centroids[j].weight;
+                }
+                let prev = &centroids[i - 1];
+                let prev_mid = prev_cumulative + prev.weight / 2.0;
+                let frac = if mid == prev_mid {
+                    0.5
+                } else {
+                    (target - prev_mid) / (mid - prev_mid)
+                };
+                return Some(prev.mean + frac * (c_mean - prev.mean));
+            }
+
+            let frac = if next_mid == mid {
                 0.5
             } else {
-                (target - prev_mid) / (mid - prev_mid)
+                (target - mid) / (next_mid - mid)
             };
-            return Some(prev.mean + frac * (c_mean - prev.mean));
-        }
-
-        let frac = if next_mid == mid {
-            0.5
+            Some(c_mean + frac * (next_c.mean - c_mean))
         } else {
-            (target - mid) / (next_mid - mid)
-        };
-        Some(c_mean + frac * (next_c.mean - c_mean))
+            // Fallback: return max.
+            Some(self.max)
+        }
     }
 
     /// Returns the estimated CDF value (proportion <= x).
-    ///
-    /// Uses binary search on centroid means and the Fenwick tree for O(log n)
-    /// cumulative weight lookups.
     pub fn cdf(&mut self, x: f64) -> Option<f64> {
-        if !self.buffer.is_empty() {
+        if self.uncompressed_count > 0 {
             self.compress();
         }
-        if self.centroids.is_empty() {
+
+        let centroids = self.tree.to_vec();
+        if centroids.is_empty() {
             return None;
         }
         if x <= self.min {
@@ -296,16 +299,14 @@ impl TDigest {
         }
 
         let n = self.total_weight;
-        let count = self.centroids.len();
+        let count = centroids.len();
 
-        // Binary search: find the rightmost centroid with mean <= x.
-        // partition_point returns the first index where mean > x.
-        let pos = self.centroids.partition_point(|c| c.mean <= x);
+        // Binary search for the rightmost centroid with mean <= x.
+        let pos = centroids.partition_point(|c| c.mean <= x);
 
-        // x is less than the first centroid's mean
         if pos == 0 {
-            let c_weight = self.centroids[0].weight;
-            let c_mean = self.centroids[0].mean;
+            let c_weight = centroids[0].weight;
+            let c_mean = centroids[0].mean;
             let inner_w = c_weight / 2.0;
             let frac = if c_mean == self.min {
                 1.0
@@ -315,17 +316,14 @@ impl TDigest {
             return Some((inner_w * frac) / n);
         }
 
-        // i is the last centroid with mean <= x
         let i = pos - 1;
-        let c_mean = self.centroids[i].mean;
-        let c_weight = self.centroids[i].weight;
-        let cumulative = if i == 0 {
-            0.0
-        } else {
-            self.fenwick_prefix_sum(i - 1)
-        };
+        let c_mean = centroids[i].mean;
+        let c_weight = centroids[i].weight;
+        let mut cumulative = 0.0;
+        for j in 0..i {
+            cumulative += centroids[j].weight;
+        }
 
-        // x is beyond the last centroid's mean
         if i == count - 1 {
             let right_w = n - cumulative - c_weight / 2.0;
             let frac = if self.max == c_mean {
@@ -336,10 +334,9 @@ impl TDigest {
             return Some((cumulative + c_weight / 2.0 + right_w * frac) / n);
         }
 
-        // x equals c_mean exactly (or is between c_mean and next centroid mean)
         let mid = cumulative + c_weight / 2.0;
-        let next_c_mean = self.centroids[i + 1].mean;
-        let next_c_weight = self.centroids[i + 1].weight;
+        let next_c_mean = centroids[i + 1].mean;
+        let next_c_weight = centroids[i + 1].weight;
         let next_cumulative = cumulative + c_weight;
         let next_mid = next_cumulative + next_c_weight / 2.0;
 
@@ -356,21 +353,18 @@ impl TDigest {
 
     /// Merges another TDigest into this one.
     pub fn merge(&mut self, other: &TDigest) {
-        let mut other_clone = other.clone();
-        if !other_clone.buffer.is_empty() {
-            other_clone.compress();
-        }
-        for c in &other_clone.centroids {
+        let other_centroids = other.tree.to_vec();
+        for c in &other_centroids {
             self.add(c.mean, c.weight);
         }
     }
 
     /// Returns the number of centroids after compressing.
     pub fn centroid_count(&mut self) -> usize {
-        if !self.buffer.is_empty() {
+        if self.uncompressed_count > 0 {
             self.compress();
         }
-        self.centroids.len()
+        self.tree.size()
     }
 }
 

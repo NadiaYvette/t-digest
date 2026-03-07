@@ -1,5 +1,8 @@
 -- Dunning t-digest for online quantile estimation.
 -- Merging digest variant with K_1 (arcsine) scale function.
+-- Uses an array-backed 2-3-4 tree with monoidal measures.
+
+local Tree234 = require("tree234")
 
 local TDigest = {}
 TDigest.__index = TDigest
@@ -7,11 +10,50 @@ TDigest.__index = TDigest
 local DEFAULT_DELTA = 100
 local BUFFER_FACTOR = 5
 
+-- Centroid measure: {weight, count, max_mean, mean_weight_sum}
+local function centroid_measure(c)
+    return {
+        weight = c.weight,
+        count = 1,
+        max_mean = c.mean,
+        mean_weight_sum = c.mean * c.weight,
+    }
+end
+
+local function combine_measure(a, b)
+    return {
+        weight = a.weight + b.weight,
+        count = a.count + b.count,
+        max_mean = math.max(a.max_mean, b.max_mean),
+        mean_weight_sum = a.mean_weight_sum + b.mean_weight_sum,
+    }
+end
+
+local function identity_measure()
+    return {
+        weight = 0,
+        count = 0,
+        max_mean = -math.huge,
+        mean_weight_sum = 0,
+    }
+end
+
+local function compare_centroid(a, b)
+    if a.mean < b.mean then return -1 end
+    if a.mean > b.mean then return 1 end
+    return 0
+end
+
 function TDigest.new(delta)
     delta = delta or DEFAULT_DELTA
     local self = setmetatable({}, TDigest)
     self.delta = delta + 0.0
-    self.centroids = {}    -- array of {mean=, weight=}
+    self.tree = Tree234.new({
+        measure_fn = centroid_measure,
+        combine_fn = combine_measure,
+        identity_fn = identity_measure,
+        compare_fn = compare_centroid,
+    })
     self.buffer = {}
     self.total_weight = 0.0
     self.min_val = math.huge
@@ -45,44 +87,45 @@ function TDigest:_k(q)
 end
 
 function TDigest:compress()
-    if #self.buffer == 0 and #self.centroids <= 1 then return end
+    if #self.buffer == 0 and self.tree:size() <= 1 then return end
 
-    local all = {}
-    for _, c in ipairs(self.centroids) do
-        all[#all + 1] = {mean = c.mean, weight = c.weight}
-    end
+    -- Collect all centroids from tree and buffer
+    local all = self.tree:collect()
     for _, c in ipairs(self.buffer) do
         all[#all + 1] = {mean = c.mean, weight = c.weight}
     end
     self.buffer = {}
+
     table.sort(all, function(a, b) return a.mean < b.mean end)
 
-    local new_centroids = {{mean = all[1].mean, weight = all[1].weight}}
+    -- Merge centroids according to K1 scale function
+    local merged = {{mean = all[1].mean, weight = all[1].weight}}
     local weight_so_far = 0.0
     local n = self.total_weight
 
     for i = 2, #all do
-        local proposed = new_centroids[#new_centroids].weight + all[i].weight
+        local proposed = merged[#merged].weight + all[i].weight
         local q0 = weight_so_far / n
         local q1 = (weight_so_far + proposed) / n
 
         if proposed <= 1 and #all > 1 then
-            merge_into_last(new_centroids, all[i])
+            merge_into_last(merged, all[i])
         elseif self:_k(q1) - self:_k(q0) <= 1.0 then
-            merge_into_last(new_centroids, all[i])
+            merge_into_last(merged, all[i])
         else
-            weight_so_far = weight_so_far + new_centroids[#new_centroids].weight
-            new_centroids[#new_centroids + 1] = {mean = all[i].mean, weight = all[i].weight}
+            weight_so_far = weight_so_far + merged[#merged].weight
+            merged[#merged + 1] = {mean = all[i].mean, weight = all[i].weight}
         end
     end
 
-    self.centroids = new_centroids
+    -- Rebuild tree from sorted merged centroids
+    self.tree:build_from_sorted(merged)
     return self
 end
 
 function TDigest:quantile(q)
     if #self.buffer > 0 then self:compress() end
-    local centroids = self.centroids
+    local centroids = self.tree:collect()
     if #centroids == 0 then return nil end
     if #centroids == 1 then return centroids[1].mean end
 
@@ -137,7 +180,7 @@ end
 
 function TDigest:cdf(x)
     if #self.buffer > 0 then self:compress() end
-    local centroids = self.centroids
+    local centroids = self.tree:collect()
     if #centroids == 0 then return nil end
     if x <= self.min_val then return 0.0 end
     if x >= self.max_val then return 1.0 end
@@ -193,19 +236,20 @@ end
 
 function TDigest:merge(other)
     if #other.buffer > 0 then other:compress() end
-    for _, c in ipairs(other.centroids) do
+    local other_centroids = other.tree:collect()
+    for _, c in ipairs(other_centroids) do
         self:add(c.mean, c.weight)
     end
     return self
 end
 
 function TDigest:size()
-    return #self.centroids + #self.buffer
+    return self.tree:size() + #self.buffer
 end
 
 function TDigest:centroid_count()
     if #self.buffer > 0 then self:compress() end
-    return #self.centroids
+    return self.tree:size()
 end
 
 return TDigest
