@@ -1,77 +1,423 @@
 # Початок роботи
 
-Цей проєкт містить реалізації t-digest вісьмома мовами програмування. Кожна реалізація використовує варіант merging digest із функцією масштабування K_1 (арксинус).
+Кожна реалізація окремою мовою є самодостатньою і знаходиться у власному каталозі.
+Міжмовних залежностей немає.
 
-## Компіляція та запуск
+---
 
-### Ruby
+## Haskell
 
-Компіляція не потрібна. Запустіть безпосередньо:
+**Необхідно:** GHC (Glasgow Haskell Compiler)
 
 ```bash
-cd ruby
+cd haskell/
+ghc -O2 -o demo Main.hs TDigest.hs
+./demo
+```
+
+Модуль `TDigest` використовує лише бібліотеки `base` (проєкт Cabal або Stack не потрібен).
+
+**Використання у власному коді:**
+
+```haskell
+import TDigest
+
+main :: IO ()
+main = do
+  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
+```
+
+---
+
+## Ruby
+
+**Необхідно:** Ruby (>= 2.0)
+
+```bash
+cd ruby/
 ruby tdigest.rb
 ```
 
-### Haskell
+Файл `tdigest.rb` містить як бібліотеку, так і демо у блоці
+`if __FILE__ == $PROGRAM_NAME`. Для використання як бібліотеки:
 
-Скомпілюйте за допомогою GHC та запустіть:
+```ruby
+require_relative 'tdigest'
 
-```bash
-cd haskell
-ghc -O2 Main.hs -o demo && ./demo
+td = TDigest.new(100)
+10_000.times { |i| td.add(i.to_f / 10_000) }
+puts td.quantile(0.99)
 ```
 
-### Common Lisp
+---
 
-Запустіть як скрипт за допомогою SBCL:
+## Ada
+
+**Необхідно:** GNAT (компілятор GCC Ada)
 
 ```bash
-cd common-lisp
+cd ada/
+gnatmake demo.adb
+./demo
+```
+
+Пакет розділений на `tdigest.ads` (специфікація), `tdigest.adb` (тіло)
+та узагальнений пакет 2-3-4 дерева `tree234.ads`/`tree234.adb`.
+Для використання у власному проєкті додайте `with TDigest;` у вихідний код і скомпілюйте всі файли разом.
+
+---
+
+## Common Lisp
+
+**Необхідно:** SBCL або будь-яка реалізація ANSI Common Lisp
+
+```bash
+cd common-lisp/
 sbcl --script demo.lisp
 ```
 
-### Scheme
+Для інтерактивного використання:
 
-Запустіть за допомогою CHICKEN Scheme:
+```lisp
+(load "tdigest.lisp")
+(let ((td (create-tdigest 100.0d0)))
+  (loop for i below 10000
+        do (tdigest-add td (/ (coerce i 'double-float) 10000.0d0)))
+  (format t "p99 = ~F~%" (tdigest-quantile td 0.99d0)))
+```
+
+---
+
+## Scheme
+
+**Необхідно:** CHICKEN Scheme (`csi`) або будь-яка реалізація R5RS/R7RS Scheme
 
 ```bash
-cd scheme
+cd scheme/
 csi -R r5rs -script demo.scm
 ```
 
-### Standard ML
-
-Скомпілюйте за допомогою MLton та запустіть:
+Або з Guile:
 
 ```bash
-cd sml
-mlton demo.mlb && ./demo
+guile demo.scm
 ```
 
-### Ada
+Примітка: використовуються літерали `+inf.0` та `-inf.0` для нескінченності. Якщо ваша
+реалізація Scheme використовує інші константи, можливо, потрібно буде змінити
+визначення `+inf` та `-inf` на початку файлу `tdigest.scm`.
 
-Скомпілюйте за допомогою GNAT та запустіть:
+---
+
+## Standard ML
+
+**Необхідно:** MLton (для компіляції) або SML/NJ (для інтерактивного використання)
+
+**З MLton:**
 
 ```bash
-cd ada
-gnatmake -O2 demo.adb -o demo && ./demo
+cd sml/
+mlton demo.mlb
+./demo
 ```
 
-### Prolog
-
-Запустіть за допомогою SWI-Prolog:
+**З SML/NJ:**
 
 ```bash
-cd prolog
+cd sml/
+sml demo.sml
+```
+
+Файл MLB (`demo.mlb`) містить перелік бібліотеки basis та вихідних файлів для
+системи збірки MLton.
+
+---
+
+## Prolog
+
+**Необхідно:** SWI-Prolog
+
+```bash
+cd prolog/
 swipl demo.pl
 ```
 
-### Mercury
+Демо завантажує модуль `tdigest` і запускається автоматично через
+директиву `:- initialization(main, main).`.
 
-Скомпілюйте за допомогою компілятора Mercury та запустіть:
+Для інтерактивного використання:
+
+```prolog
+?- use_module(tdigest).
+?- tdigest_new(100, TD0),
+   tdigest_add(TD0, 42.0, 1.0, TD1),
+   tdigest_add(TD1, 99.0, 1.0, TD2),
+   tdigest_quantile(TD2, 0.5, Median).
+```
+
+---
+
+## Mercury
+
+**Необхідно:** компілятор Mercury (`mmc`)
+
+**Чисто функціональна версія** (finger tree):
 
 ```bash
-cd mercury
-mmc --make demo && ./demo
+cd mercury/
+mmc --make demo
+./demo
+```
+
+**Мутабельна версія** (2-3-4 дерево з типами унікальності):
+
+```bash
+cd mercury/
+mmc --make demo_mut
+./demo_mut
+```
+
+Система збірки Mercury автоматично скомпілює залежності
+(`tdigest.m`, `fingertree.m`, `measured_tree234.m` тощо).
+
+---
+
+## C
+
+**Необхідно:** GCC або Clang
+
+```bash
+cd c/
+gcc -O2 -lm -o demo demo.c tdigest.c
+./demo
+```
+
+---
+
+## C++
+
+**Необхідно:** G++ або Clang++ (C++17)
+
+```bash
+cd cpp/
+g++ -O2 -std=c++17 -o demo demo.cpp tdigest.cpp
+./demo
+```
+
+---
+
+## Go
+
+**Необхідно:** Go (>= 1.18)
+
+```bash
+cd go/demo
+go run .
+```
+
+---
+
+## Rust
+
+**Необхідно:** Cargo та набір інструментів Rust
+
+```bash
+cd rust/
+cargo run --release
+```
+
+---
+
+## Java
+
+**Необхідно:** JDK (>= 11)
+
+```bash
+cd java/
+javac Tree234.java TDigest.java Demo.java
+java Demo
+```
+
+---
+
+## Kotlin
+
+**Необхідно:** компілятор Kotlin
+
+```bash
+cd kotlin/
+kotlinc Tree234.kt TDigest.kt Demo.kt -include-runtime -d demo.jar
+java -jar demo.jar
+```
+
+---
+
+## Python
+
+**Необхідно:** Python 3 (без зовнішніх залежностей)
+
+```bash
+cd python/
+python3 demo.py
+```
+
+---
+
+## Julia
+
+**Необхідно:** Julia (>= 1.6)
+
+```bash
+cd julia/
+julia demo.jl
+```
+
+---
+
+## OCaml
+
+**Необхідно:** компілятор OCaml з ocamlfind
+
+```bash
+cd ocaml/
+ocamlfind ocamlopt tdigest.ml demo.ml -o demo
+./demo
+```
+
+---
+
+## Erlang
+
+**Необхідно:** Erlang/OTP
+
+```bash
+cd erlang/
+erlc tdigest.erl demo.erl
+erl -noshell -s demo main -s init stop
+```
+
+---
+
+## Elixir
+
+**Необхідно:** Elixir (>= 1.12)
+
+```bash
+cd elixir/
+elixir demo.exs
+```
+
+---
+
+## Fortran
+
+**Необхідно:** GFortran або інший компілятор Fortran 2003+
+
+```bash
+cd fortran/
+gfortran -O2 -o demo tdigest.f90 demo.f90
+./demo
+```
+
+---
+
+## Perl
+
+**Необхідно:** Perl 5
+
+```bash
+cd perl/
+perl -I. demo.pl
+```
+
+---
+
+## Lua
+
+**Необхідно:** Lua (>= 5.1)
+
+```bash
+cd lua/
+lua demo.lua
+```
+
+---
+
+## R
+
+**Необхідно:** R (>= 3.0)
+
+```bash
+cd r/
+Rscript demo.R
+```
+
+---
+
+## Zig
+
+**Необхідно:** компілятор Zig
+
+```bash
+cd zig/
+zig build-exe demo.zig -O ReleaseFast
+./demo
+```
+
+---
+
+## Nim
+
+**Необхідно:** компілятор Nim
+
+```bash
+cd nim/
+nim c -d:release -o:demo demo.nim
+./demo
+```
+
+---
+
+## D
+
+**Необхідно:** DMD або LDC2
+
+```bash
+cd d/
+dmd -O -of=demo demo.d tdigest.d tree234.d
+./demo
+```
+
+---
+
+## C#
+
+**Необхідно:** .NET SDK або Mono
+
+**З .NET SDK:**
+
+```bash
+cd csharp/
+dotnet run
+```
+
+**З Mono:**
+
+```bash
+cd csharp/
+mcs -langversion:latest -out:demo.exe Demo.cs TDigest.cs Tree234.cs
+mono demo.exe
+```
+
+---
+
+## Swift
+
+**Необхідно:** компілятор Swift
+
+```bash
+cd swift/
+swiftc -O -o demo tree234.swift tdigest.swift demo.swift
+./demo
 ```

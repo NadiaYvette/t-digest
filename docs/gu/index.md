@@ -6,7 +6,7 @@
 
 t-digest ની ખાસિયત એ છે કે તે વિતરણના છેડાઓ (tails) પર સૌથી વધુ ચોક્કસ હોય છે. એટલે કે ૯૯મા કે ૯૯.૯મા શતાંશકનો અંદાજ મધ્ય ભાગ કરતાં વધુ વિશ્વસનીય હોય છે. આ ગુણ વિલંબ દેખરેખ, વિસંગતતા શોધ અને સેવા-સ્તર કરાર (SLA) માપન માટે ખૂબ ઉપયોગી છે.
 
-આ પ્રોજેક્ટમાં t-digest આઠ પ્રોગ્રામિંગ ભાષાઓમાં ઉપલબ્ધ છે: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog અને Mercury.
+આ પ્રોજેક્ટમાં t-digest 28 પ્રોગ્રામિંગ ભાષાઓમાં ઉપલબ્ધ છે: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# અને Swift.
 
 ## મુખ્ય ગુણધર્મો
 

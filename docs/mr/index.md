@@ -6,7 +6,7 @@
 
 t-digest चे वैशिष्ट्य म्हणजे ती वितरणाच्या टोकांवर (tails) सर्वाधिक अचूक असते. म्हणजेच ९९व्या किंवा ९९.९व्या शतांशकाचा अंदाज मधल्या भागापेक्षा अधिक विश्वसनीय असतो. हा गुणधर्म विलंब निरीक्षण, विसंगती ओळख आणि सेवा-स्तर करार (SLA) मोजमापासाठी अत्यंत उपयुक्त आहे.
 
-या प्रकल्पात t-digest आठ प्रोग्रामिंग भाषांमध्ये उपलब्ध आहे: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog आणि Mercury.
+या प्रकल्पात t-digest 28 प्रोग्रामिंग भाषांमध्ये उपलब्ध आहे: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# आणि Swift.
 
 ## प्रमुख गुणधर्म
 

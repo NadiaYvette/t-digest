@@ -2,7 +2,7 @@
 
 ## ముందస్తు అవసరాలు
 
-t-digest భాండాగారంలో ఎనిమిది ప్రోగ్రామింగ్ భాషలలో అమలు ఉంది. ప్రతిదాన్ని నడపడానికి సంబంధిత భాష యొక్క కంపైలర్ లేదా ఇంటర్‌ప్రెటర్ ఇన్‌స్టాల్ చేయబడి ఉండాలి.
+t-digest భాండాగారంలో 28 ప్రోగ్రామింగ్ భాషలలో అమలు ఉంది. ప్రతిదాన్ని నడపడానికి సంబంధిత భాష యొక్క కంపైలర్ లేదా ఇంటర్‌ప్రెటర్ ఇన్‌స్టాల్ చేయబడి ఉండాలి.
 
 ```bash
 # భాండాగారం క్లోన్ చేయండి
@@ -10,28 +10,33 @@ git clone <repository-url>
 cd t-digest
 ```
 
-## Ruby
-
-Ruby అమలుకు బాహ్య లైబ్రరీలు అవసరం లేదు. ప్రదర్శన నడపడానికి:
-
-```bash
-cd ruby
-ruby demo.rb
-```
-
-పనితీరు మానదండం నడపడానికి:
-
-```bash
-ruby bench.rb
-```
-
 ## Haskell
 
 Haskell అమలు GHC కంపైలర్ ఉపయోగిస్తుంది. శ్రేష్ఠీకరణతో కంపైల్ చేయండి:
 
 ```bash
-cd haskell
-ghc -O2 Main.hs -o demo && ./demo
+cd haskell/
+ghc -O2 -o demo Main.hs TDigest.hs
+./demo
+```
+
+## Ruby
+
+Ruby అమలుకు బాహ్య లైబ్రరీలు అవసరం లేదు. ప్రదర్శన నడపడానికి:
+
+```bash
+cd ruby/
+ruby tdigest.rb
+```
+
+## Ada
+
+Ada అమలు GNAT కంపైలర్ ఉపయోగిస్తుంది:
+
+```bash
+cd ada/
+gnatmake demo.adb
+./demo
 ```
 
 ## Common Lisp
@@ -39,7 +44,7 @@ ghc -O2 Main.hs -o demo && ./demo
 Common Lisp అమలు SBCL ఇంటర్‌ప్రెటర్ ఉపయోగిస్తుంది:
 
 ```bash
-cd common-lisp
+cd common-lisp/
 sbcl --script demo.lisp
 ```
 
@@ -48,26 +53,33 @@ sbcl --script demo.lisp
 Scheme అమలు CHICKEN Scheme (csi) ఇంటర్‌ప్రెటర్‌తో R5RS ప్రమాణం ఉపయోగిస్తుంది:
 
 ```bash
-cd scheme
+cd scheme/
 csi -R r5rs -script demo.scm
+```
+
+లేదా Guile తో:
+
+```bash
+guile demo.scm
 ```
 
 ## Standard ML
 
-Standard ML అమలు MLton కంపైలర్ ఉపయోగిస్తుంది. `.mlb` నిర్మాణ ఫైల్ నుండి కంపైల్ చేయండి:
+Standard ML అమలు MLton కంపైలర్ ఉపయోగిస్తుంది:
+
+**MLton తో:**
 
 ```bash
-cd sml
-mlton demo.mlb && ./demo
+cd sml/
+mlton demo.mlb
+./demo
 ```
 
-## Ada
-
-Ada అమలు GNAT కంపైలర్ ఉపయోగిస్తుంది. శ్రేష్ఠీకరణతో కంపైల్ చేయండి:
+**SML/NJ తో:**
 
 ```bash
-cd ada
-gnatmake -O2 demo.adb -o demo && ./demo
+cd sml/
+sml demo.sml
 ```
 
 ## Prolog
@@ -75,7 +87,7 @@ gnatmake -O2 demo.adb -o demo && ./demo
 Prolog అమలు SWI-Prolog ఇంటర్‌ప్రెటర్ ఉపయోగిస్తుంది:
 
 ```bash
-cd prolog
+cd prolog/
 swipl demo.pl
 ```
 
@@ -83,10 +95,264 @@ swipl demo.pl
 
 Mercury అమలు Melbourne Mercury కంపైలర్ ఉపయోగిస్తుంది:
 
+**స్వచ్ఛ ఫంక్షనల్ వెర్షన్** (ఫింగర్ ట్రీ):
+
 ```bash
-cd mercury
-mmc --make demo && ./demo
+cd mercury/
+mmc --make demo
+./demo
 ```
+
+**మ్యూటబుల్ వెర్షన్** (2-3-4 ట్రీ, యూనిక్‌నెస్ టైప్‌లతో):
+
+```bash
+cd mercury/
+mmc --make demo_mut
+./demo_mut
+```
+
+---
+
+## C
+
+**ముందస్తు అవసరాలు:** GCC లేదా Clang
+
+```bash
+cd c/
+gcc -O2 -lm -o demo demo.c tdigest.c
+./demo
+```
+
+---
+
+## C++
+
+**ముందస్తు అవసరాలు:** G++ లేదా Clang++ (C++17)
+
+```bash
+cd cpp/
+g++ -O2 -std=c++17 -o demo demo.cpp tdigest.cpp
+./demo
+```
+
+---
+
+## Go
+
+**ముందస్తు అవసరాలు:** Go (>= 1.18)
+
+```bash
+cd go/demo
+go run .
+```
+
+---
+
+## Rust
+
+**ముందస్తు అవసరాలు:** Cargo మరియు Rust టూల్‌చైన్
+
+```bash
+cd rust/
+cargo run --release
+```
+
+---
+
+## Java
+
+**ముందస్తు అవసరాలు:** JDK (>= 11)
+
+```bash
+cd java/
+javac Tree234.java TDigest.java Demo.java
+java Demo
+```
+
+---
+
+## Kotlin
+
+**ముందస్తు అవసరాలు:** Kotlin కంపైలర్
+
+```bash
+cd kotlin/
+kotlinc Tree234.kt TDigest.kt Demo.kt -include-runtime -d demo.jar
+java -jar demo.jar
+```
+
+---
+
+## Python
+
+**ముందస్తు అవసరాలు:** Python 3 (బాహ్య డిపెండెన్సీలు లేవు)
+
+```bash
+cd python/
+python3 demo.py
+```
+
+---
+
+## Julia
+
+**ముందస్తు అవసరాలు:** Julia (>= 1.6)
+
+```bash
+cd julia/
+julia demo.jl
+```
+
+---
+
+## OCaml
+
+**ముందస్తు అవసరాలు:** OCaml కంపైలర్ మరియు ocamlfind
+
+```bash
+cd ocaml/
+ocamlfind ocamlopt tdigest.ml demo.ml -o demo
+./demo
+```
+
+---
+
+## Erlang
+
+**ముందస్తు అవసరాలు:** Erlang/OTP
+
+```bash
+cd erlang/
+erlc tdigest.erl demo.erl
+erl -noshell -s demo main -s init stop
+```
+
+---
+
+## Elixir
+
+**ముందస్తు అవసరాలు:** Elixir (>= 1.12)
+
+```bash
+cd elixir/
+elixir demo.exs
+```
+
+---
+
+## Fortran
+
+**ముందస్తు అవసరాలు:** GFortran లేదా ఇతర Fortran 2003+ కంపైలర్
+
+```bash
+cd fortran/
+gfortran -O2 -o demo tdigest.f90 demo.f90
+./demo
+```
+
+---
+
+## Perl
+
+**ముందస్తు అవసరాలు:** Perl 5
+
+```bash
+cd perl/
+perl -I. demo.pl
+```
+
+---
+
+## Lua
+
+**ముందస్తు అవసరాలు:** Lua (>= 5.1)
+
+```bash
+cd lua/
+lua demo.lua
+```
+
+---
+
+## R
+
+**ముందస్తు అవసరాలు:** R (>= 3.0)
+
+```bash
+cd r/
+Rscript demo.R
+```
+
+---
+
+## Zig
+
+**ముందస్తు అవసరాలు:** Zig కంపైలర్
+
+```bash
+cd zig/
+zig build-exe demo.zig -O ReleaseFast
+./demo
+```
+
+---
+
+## Nim
+
+**ముందస్తు అవసరాలు:** Nim కంపైలర్
+
+```bash
+cd nim/
+nim c -d:release -o:demo demo.nim
+./demo
+```
+
+---
+
+## D
+
+**ముందస్తు అవసరాలు:** DMD లేదా LDC2
+
+```bash
+cd d/
+dmd -O -of=demo demo.d tdigest.d tree234.d
+./demo
+```
+
+---
+
+## C#
+
+**ముందస్తు అవసరాలు:** .NET SDK లేదా Mono
+
+**.NET SDK తో:**
+
+```bash
+cd csharp/
+dotnet run
+```
+
+**Mono తో:**
+
+```bash
+cd csharp/
+mcs -langversion:latest -out:demo.exe Demo.cs TDigest.cs Tree234.cs
+mono demo.exe
+```
+
+---
+
+## Swift
+
+**ముందస్తు అవసరాలు:** Swift కంపైలర్
+
+```bash
+cd swift/
+swiftc -O -o demo tree234.swift tdigest.swift demo.swift
+./demo
+```
+
+---
 
 ## సాధారణ సమస్యా పరిష్కారం
 

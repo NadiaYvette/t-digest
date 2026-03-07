@@ -6,7 +6,7 @@
 
 t-digest యొక్క ప్రత్యేకత ఏమిటంటే ఇది పంపిణీ యొక్క తోకల (tails) వద్ద అత్యధిక ఖచ్చితత్వం కలిగి ఉంటుంది. అంటే 99వ లేదా 99.9వ శతాంశకం యొక్క అంచనా మధ్య భాగం కంటే ఎక్కువ నమ్మదగినదిగా ఉంటుంది. ఈ లక్షణం జాప్యం పర్యవేక్షణ, అసాధారణత గుర్తింపు మరియు సేవా-స్థాయి ఒప్పందాల (SLA) కొలతకు చాలా ఉపయోగకరం.
 
-ఈ ప్రాజెక్టులో t-digest ఎనిమిది ప్రోగ్రామింగ్ భాషలలో అందుబాటులో ఉంది: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog మరియు Mercury.
+ఈ ప్రాజెక్టులో t-digest 28 ప్రోగ్రామింగ్ భాషలలో అందుబాటులో ఉంది: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# మరియు Swift.
 
 ## ప్రధాన లక్షణాలు
 

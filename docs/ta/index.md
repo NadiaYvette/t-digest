@@ -6,7 +6,7 @@
 
 t-digest-ன் சிறப்பியல்பு என்னவென்றால், இது பரவலின் வால்களில் (tails) மிகவும் துல்லியமானது. அதாவது 99-ஆவது அல்லது 99.9-ஆவது சதவிகிதத்தின் கணிப்பு நடுப்பகுதியை விட நம்பகமானது. இந்தப் பண்பு தாமதக் கண்காணிப்பு, வழக்கத்திற்கு மாறான நிகழ்வுகளைக் கண்டறிதல் மற்றும் சேவை-நிலை ஒப்பந்த (SLA) அளவீடு ஆகியவற்றுக்கு மிகவும் பயனுள்ளது.
 
-இந்தத் திட்டத்தில் t-digest எட்டு நிரலாக்க மொழிகளில் கிடைக்கிறது: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog மற்றும் Mercury.
+இந்தத் திட்டத்தில் t-digest 28 நிரலாக்க மொழிகளில் கிடைக்கிறது: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# மற்றும் Swift.
 
 ## முக்கிய பண்புகள்
 

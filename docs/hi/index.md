@@ -6,7 +6,7 @@
 
 t-digest की विशेष बात यह है कि यह वितरण के छोरों (tails) पर सबसे अधिक सटीक होता है। अर्थात 99वें या 99.9वें शतमक का आकलन मध्य भाग की तुलना में अधिक विश्वसनीय होता है। यह गुण विलंबता निगरानी, विसंगति पहचान और सेवा-स्तर समझौतों (SLA) के मापन के लिए अत्यंत उपयोगी है।
 
-इस परियोजना में t-digest का कार्यान्वयन आठ प्रोग्रामिंग भाषाओं में उपलब्ध है: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog और Mercury।
+इस परियोजना में t-digest का कार्यान्वयन 28 प्रोग्रामिंग भाषाओं में उपलब्ध है: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# और Swift।
 
 ## प्रमुख गुण
 

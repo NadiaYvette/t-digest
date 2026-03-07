@@ -6,7 +6,7 @@
 
 t-digest-এর বিশেষ বৈশিষ্ট্য হলো এটি বিতরণের প্রান্তগুলিতে (tails) সবচেয়ে বেশি নির্ভুল। অর্থাৎ ৯৯তম বা ৯৯.৯তম শতাংশকের আকলন মধ্যভাগের তুলনায় অধিক নির্ভরযোগ্য। এই গুণটি বিলম্ব পর্যবেক্ষণ, অসঙ্গতি শনাক্তকরণ এবং সেবা-স্তর চুক্তি (SLA) পরিমাপের জন্য অত্যন্ত কার্যকর।
 
-এই প্রকল্পে t-digest আটটি প্রোগ্রামিং ভাষায় বাস্তবায়িত: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog এবং Mercury।
+এই প্রকল্পে t-digest 28টি প্রোগ্রামিং ভাষায় বাস্তবায়িত: Ruby, Haskell, Common Lisp, Scheme, Standard ML, Ada, Prolog, Mercury, C, C++, Go, Rust, Java, Kotlin, Python, Julia, OCaml, Erlang, Elixir, Fortran, Perl, Lua, R, Zig, Nim, D, C# এবং Swift।
 
 ## প্রধান বৈশিষ্ট্য
 

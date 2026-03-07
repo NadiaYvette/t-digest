@@ -63,9 +63,10 @@ gnatmake demo.adb
 ./demo
 ```
 
-The package is split into `tdigest.ads` (spec) and `tdigest.adb` (body).
+The package is split into `tdigest.ads` (spec), `tdigest.adb` (body),
+and the generic `tree234.ads`/`tree234.adb` 2-3-4 tree package.
 To use in your own project, `with TDigest;` in your source and compile
-both files together.
+all files together.
 
 ---
 
@@ -163,14 +164,24 @@ To use interactively:
 
 **Prerequisites:** Mercury compiler (`mmc`)
 
+**Pure functional version** (finger tree):
+
 ```bash
 cd mercury/
 mmc --make demo
 ./demo
 ```
 
-The Mercury build system will automatically compile `tdigest.m` as a
-dependency of `demo.m`.
+**Mutable version** (2-3-4 tree with uniqueness types):
+
+```bash
+cd mercury/
+mmc --make demo_mut
+./demo_mut
+```
+
+The Mercury build system will automatically compile dependencies
+(`tdigest.m`, `fingertree.m`, `measured_tree234.m`, etc.).
 
 ---
 
@@ -226,7 +237,7 @@ cargo run --release
 
 ```bash
 cd java/
-javac TDigest.java Demo.java
+javac Tree234.java TDigest.java Demo.java
 java Demo
 ```
 
@@ -238,7 +249,7 @@ java Demo
 
 ```bash
 cd kotlin/
-kotlinc TDigest.kt Demo.kt -include-runtime -d demo.jar
+kotlinc Tree234.kt TDigest.kt Demo.kt -include-runtime -d demo.jar
 java -jar demo.jar
 ```
 
@@ -376,7 +387,7 @@ nim c -d:release -o:demo demo.nim
 
 ```bash
 cd d/
-dmd -O -of=demo demo.d tdigest.d
+dmd -O -of=demo demo.d tdigest.d tree234.d
 ./demo
 ```
 
@@ -386,9 +397,19 @@ dmd -O -of=demo demo.d tdigest.d
 
 **Prerequisites:** .NET SDK or Mono
 
+**With .NET SDK:**
+
 ```bash
 cd csharp/
 dotnet run
+```
+
+**With Mono:**
+
+```bash
+cd csharp/
+mcs -langversion:latest -out:demo.exe Demo.cs TDigest.cs Tree234.cs
+mono demo.exe
 ```
 
 ---
@@ -399,6 +420,6 @@ dotnet run
 
 ```bash
 cd swift/
-swiftc -O -o demo tdigest.swift demo.swift
+swiftc -O -o demo tree234.swift tdigest.swift demo.swift
 ./demo
 ```

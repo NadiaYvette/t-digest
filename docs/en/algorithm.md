@@ -8,18 +8,30 @@ with other quantile sketches.
 
 ## Data Structure
 
+The core data types are common to all implementations:
+
 ```
 Centroid:
     mean   : float
     weight : float
 
 TDigest:
-    centroids    : list of Centroid, sorted by mean
-    buffer       : list of Centroid (unsorted)
+    centroids    : sorted collection of Centroid
     total_weight : float
     min_val      : float
     max_val      : float
-    delta         : float          -- compression parameter
+    delta        : float          -- compression parameter
+```
+
+The sorted collection varies by implementation: a buffer plus sorted
+array, a 2-3-4 tree with monoidal measures, or a finger tree. See
+**Implementation Architectures** below for details. The pseudocode
+in this chapter uses the buffer + sorted array approach for clarity:
+
+```
+TDigest (buffer variant):
+    centroids    : list of Centroid, sorted by mean
+    buffer       : list of Centroid (unsorted)
     buffer_cap   : int            -- floor(delta * 5)
 ```
 
@@ -58,7 +70,7 @@ k1'(q) = delta / (pi * sqrt(q * (1 - q)))
 ```
 
 This diverges at q = 0 and q = 1, forcing centroids at the tails to be
-vanishingly small. It is the scale function used by all eight
+vanishingly small. It is the scale function used by all 28
 implementations in this project.
 
 ### K2 (Logit-based)
@@ -268,6 +280,98 @@ function MERGE(td1, td2):
 ```
 
 Time: O(delta log delta).
+
+---
+
+## Implementation Architectures
+
+The implementations in this project use three distinct internal data
+structures, each offering different complexity trade-offs.
+
+### 1. Buffer + Sorted Array (Original)
+
+The simplest approach, used by some scripting-language implementations.
+Values are buffered and periodically merged into a sorted array of
+centroids via the greedy compress pass described above.
+
+- **Add:** Amortized O(1) (append to buffer; compress every ~5δ adds)
+- **Compress:** O(m log m) where m = |centroids| + |buffer| = O(δ)
+- **Quantile / CDF:** O(δ) linear walk or binary search over centroids
+
+### 2. Array-Backed 2-3-4 Tree with Monoidal Measures (Mutable)
+
+Most implementations (22 languages) store centroids in an array-backed
+2-3-4 tree where each node caches a four-component monoidal measure:
+
+```
+TdMeasure:
+    weight          : float   -- total weight in subtree
+    count           : int     -- number of centroids in subtree
+    max_mean        : float   -- maximum centroid mean in subtree
+    mean_weight_sum : float   -- sum of (mean * weight) in subtree
+```
+
+The tree supports O(log n) insertion, O(log n) weight-based search
+(for quantile queries), and O(n) in-order collection (for compress).
+Where the language supports generics, the tree is implemented as a
+separate reusable module parameterized by key type, measure type, and
+a traits interface providing `measure`, `combine`, `identity`, and
+`compare` operations.
+
+- **Add:** O(log n) tree insertion + amortized compress
+- **Compress:** O(m log m) collect-sort-merge-rebuild
+- **Quantile:** O(n) via collect + interpolation (or O(log n) via
+  `find_by_weight` on the cached subtree measures)
+- **CDF:** O(n) via collect + interpolation
+
+The 2-3-4 tree uses an array-backed node pool with a free list for
+allocation, giving cache-friendly memory layout. Nodes have 1--3 keys
+and 2--4 children. Insertion uses top-down 4-node splitting
+(Sedgewick's approach) to maintain balance without backtracking.
+
+### 3. Finger Tree with Monoidal Measures (Purely Functional)
+
+Three implementations (Haskell, Mercury pure, Standard ML) use purely
+functional balanced trees with the same four-component monoidal measure
+cached at every internal node. The Haskell and Mercury implementations
+use 2-3 finger trees; SML uses a weight-balanced BST.
+
+- **Add:** O(log n) via split-by-mean, K1 check, merge-or-insert
+- **Compress:** O(δ log n) via iterated split at K1 unit boundaries
+- **Quantile:** O(log n) via split-by-weight
+- **CDF:** O(log n) via split-by-mean
+
+The finger tree approach avoids buffering entirely: each `add` directly
+inserts into the tree structure, and compress is triggered when the
+centroid count exceeds a threshold (typically 3δ). The split-based
+compress walks the K1 scale function boundaries and splits the tree at
+each one, merging each chunk into a single centroid.
+
+The Mercury finger tree module (`fingertree.m`) is fully polymorphic,
+parameterized by `monoid(M)` and `measured(M, A)` type classes. The
+t-digest module provides the instance declarations binding the
+four-component measure to centroids.
+
+### 4. Mutable 2-3-4 Tree with Substructural Types
+
+Two implementations use mutable 2-3-4 trees in languages with
+substructural type systems that track uniqueness or linearity:
+
+- **Haskell** (`TDigestM.hs`): Uses the `ST` monad to provide
+  mutable arrays within a pure external interface. The 2-3-4 tree
+  node pool is an `STArray`, giving imperative performance with
+  referential transparency at the boundary.
+
+- **Mercury** (`tdigest_mut.m`): Uses Mercury's uniqueness types
+  (`di`/`uo` modes for destructive input / unique output) to
+  thread mutable state. The `measured_tree234` module provides a
+  generic 2-3-4 tree parameterized by `mt_monoid(M)` and
+  `mt_measured(M, K)` type classes (named with `mt_` prefix to
+  avoid clashing with Mercury's standard library `tree234` module).
+
+Both achieve the same O(log n) complexity as the imperative 2-3-4 tree
+implementations while preserving the safety guarantees of their
+respective type systems.
 
 ---
 

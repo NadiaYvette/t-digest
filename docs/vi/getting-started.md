@@ -1,85 +1,415 @@
 # Bắt đầu nhanh
 
-Dự án này bao gồm các bản triển khai t-digest bằng 8 ngôn ngữ lập trình. Hãy làm theo hướng dẫn dưới đây để xây dựng và chạy từng bản triển khai.
+Mỗi bản triển khai theo từng ngôn ngữ được chứa độc lập trong thư mục riêng.
+Không có sự phụ thuộc chéo giữa các ngôn ngữ.
 
-## Sao chép kho mã nguồn
+---
+
+## Haskell
+
+**Điều kiện tiên quyết:** GHC (Glasgow Haskell Compiler)
 
 ```bash
-git clone https://github.com/example/t-digest.git
-cd t-digest
+cd haskell/
+ghc -O2 -o demo Main.hs TDigest.hs
+./demo
 ```
 
-## Xây dựng và chạy theo từng ngôn ngữ
+Module `TDigest` chỉ sử dụng thư viện `base` (không cần dự án Cabal hay Stack).
 
-### Ruby
+**Sử dụng trong mã nguồn của bạn:**
 
-```bash
-ruby demo.rb
+```haskell
+import TDigest
+
+main :: IO ()
+main = do
+  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
 ```
 
-Không có phụ thuộc bên ngoài. Khuyến nghị sử dụng Ruby 2.7 trở lên.
+---
 
-### Haskell
+## Ruby
+
+**Điều kiện tiên quyết:** Ruby (>= 2.0)
 
 ```bash
-ghc -O2 Main.hs -o demo && ./demo
+cd ruby/
+ruby tdigest.rb
 ```
 
-Cần có GHC (Glasgow Haskell Compiler). Chạy trong thư mục `haskell/`.
+Tệp `tdigest.rb` chứa cả thư viện và chương trình minh họa (trong khối `if __FILE__ == $PROGRAM_NAME`). Để sử dụng như thư viện:
 
-### Common Lisp
+```ruby
+require_relative 'tdigest'
+
+td = TDigest.new(100)
+10_000.times { |i| td.add(i.to_f / 10_000) }
+puts td.quantile(0.99)
+```
+
+---
+
+## Ada
+
+**Điều kiện tiên quyết:** GNAT (trình biên dịch Ada của GCC)
 
 ```bash
+cd ada/
+gnatmake demo.adb
+./demo
+```
+
+Gói được chia thành `tdigest.ads` (đặc tả), `tdigest.adb` (thân), và gói cây 2-3-4 tổng quát `tree234.ads`/`tree234.adb`. Để sử dụng trong dự án của bạn, viết `with TDigest;` trong mã nguồn và biên dịch tất cả các tệp cùng nhau.
+
+---
+
+## Common Lisp
+
+**Điều kiện tiên quyết:** SBCL hoặc bất kỳ bản triển khai ANSI Common Lisp nào
+
+```bash
+cd common-lisp/
 sbcl --script demo.lisp
 ```
 
-Cần có SBCL (Steel Bank Common Lisp). Chạy trong thư mục `common-lisp/`.
+Sử dụng tương tác:
 
-### Scheme
+```lisp
+(load "tdigest.lisp")
+(let ((td (create-tdigest 100.0d0)))
+  (loop for i below 10000
+        do (tdigest-add td (/ (coerce i 'double-float) 10000.0d0)))
+  (format t "p99 = ~F~%" (tdigest-quantile td 0.99d0)))
+```
+
+---
+
+## Scheme
+
+**Điều kiện tiên quyết:** CHICKEN Scheme (`csi`) hoặc bất kỳ Scheme R5RS/R7RS nào
 
 ```bash
+cd scheme/
 csi -R r5rs -script demo.scm
 ```
 
-Cần có CHICKEN Scheme. Chạy trong thư mục `scheme/`.
-
-### Standard ML
+Hoặc với Guile:
 
 ```bash
-mlton demo.mlb && ./demo
+guile demo.scm
 ```
 
-Cần có trình biên dịch MLton. Chạy trong thư mục `sml/`.
+Lưu ý: Các literal `+inf.0` và `-inf.0` được sử dụng cho vô cực. Nếu bản triển khai Scheme của bạn sử dụng các hằng số khác, bạn có thể cần điều chỉnh định nghĩa `+inf` và `-inf` ở đầu tệp `tdigest.scm`.
 
-### Ada
+---
+
+## Standard ML
+
+**Điều kiện tiên quyết:** MLton (để biên dịch) hoặc SML/NJ (sử dụng tương tác)
+
+**Với MLton:**
 
 ```bash
-gnatmake -O2 demo.adb -o demo && ./demo
+cd sml/
+mlton demo.mlb
+./demo
 ```
 
-Cần có GNAT (trình biên dịch Ada của GNU). Chạy trong thư mục `ada/`.
-
-### Prolog
+**Với SML/NJ:**
 
 ```bash
+cd sml/
+sml demo.sml
+```
+
+Tệp MLB (`demo.mlb`) liệt kê thư viện basis và các tệp nguồn cho hệ thống xây dựng của MLton.
+
+---
+
+## Prolog
+
+**Điều kiện tiên quyết:** SWI-Prolog
+
+```bash
+cd prolog/
 swipl demo.pl
 ```
 
-Cần có SWI-Prolog. Chạy trong thư mục `prolog/`.
+Chương trình minh họa tải module `tdigest` và tự động chạy thông qua chỉ thị `:- initialization(main, main).`.
 
-### Mercury
+Sử dụng tương tác:
 
-```bash
-mmc --make demo && ./demo
+```prolog
+?- use_module(tdigest).
+?- tdigest_new(100, TD0),
+   tdigest_add(TD0, 42.0, 1.0, TD1),
+   tdigest_add(TD1, 99.0, 1.0, TD2),
+   tdigest_quantile(TD2, 0.5, Median).
 ```
 
-Cần có trình biên dịch Mercury. Chạy trong thư mục `mercury/`.
+---
 
-## Kết quả đầu ra của chương trình minh họa
+## Mercury
 
-Mỗi chương trình minh họa thực hiện các bước sau:
+**Điều kiện tiên quyết:** Trình biên dịch Mercury (`mmc`)
 
-1. Khởi tạo t-digest
-2. Thêm dữ liệu mẫu
-3. Tính toán và hiển thị các phân vị khác nhau (trung vị, p90, p99, v.v.)
-4. Hiển thị so sánh giữa giá trị ước lượng và giá trị lý thuyết
+**Phiên bản hàm thuần túy** (finger tree):
+
+```bash
+cd mercury/
+mmc --make demo
+./demo
+```
+
+**Phiên bản có thể thay đổi** (cây 2-3-4 với kiểu duy nhất):
+
+```bash
+cd mercury/
+mmc --make demo_mut
+./demo_mut
+```
+
+Hệ thống xây dựng Mercury sẽ tự động biên dịch các phụ thuộc (`tdigest.m`, `fingertree.m`, `measured_tree234.m`, v.v.).
+
+---
+
+## C
+
+**Điều kiện tiên quyết:** GCC hoặc Clang
+
+```bash
+cd c/
+gcc -O2 -lm -o demo demo.c tdigest.c
+./demo
+```
+
+---
+
+## C++
+
+**Điều kiện tiên quyết:** G++ hoặc Clang++ (C++17)
+
+```bash
+cd cpp/
+g++ -O2 -std=c++17 -o demo demo.cpp tdigest.cpp
+./demo
+```
+
+---
+
+## Go
+
+**Điều kiện tiên quyết:** Go (>= 1.18)
+
+```bash
+cd go/demo
+go run .
+```
+
+---
+
+## Rust
+
+**Điều kiện tiên quyết:** Cargo và bộ công cụ Rust
+
+```bash
+cd rust/
+cargo run --release
+```
+
+---
+
+## Java
+
+**Điều kiện tiên quyết:** JDK (>= 11)
+
+```bash
+cd java/
+javac Tree234.java TDigest.java Demo.java
+java Demo
+```
+
+---
+
+## Kotlin
+
+**Điều kiện tiên quyết:** Trình biên dịch Kotlin
+
+```bash
+cd kotlin/
+kotlinc Tree234.kt TDigest.kt Demo.kt -include-runtime -d demo.jar
+java -jar demo.jar
+```
+
+---
+
+## Python
+
+**Điều kiện tiên quyết:** Python 3 (không có phụ thuộc bên ngoài)
+
+```bash
+cd python/
+python3 demo.py
+```
+
+---
+
+## Julia
+
+**Điều kiện tiên quyết:** Julia (>= 1.6)
+
+```bash
+cd julia/
+julia demo.jl
+```
+
+---
+
+## OCaml
+
+**Điều kiện tiên quyết:** Trình biên dịch OCaml và ocamlfind
+
+```bash
+cd ocaml/
+ocamlfind ocamlopt tdigest.ml demo.ml -o demo
+./demo
+```
+
+---
+
+## Erlang
+
+**Điều kiện tiên quyết:** Erlang/OTP
+
+```bash
+cd erlang/
+erlc tdigest.erl demo.erl
+erl -noshell -s demo main -s init stop
+```
+
+---
+
+## Elixir
+
+**Điều kiện tiên quyết:** Elixir (>= 1.12)
+
+```bash
+cd elixir/
+elixir demo.exs
+```
+
+---
+
+## Fortran
+
+**Điều kiện tiên quyết:** GFortran hoặc trình biên dịch Fortran 2003 trở lên
+
+```bash
+cd fortran/
+gfortran -O2 -o demo tdigest.f90 demo.f90
+./demo
+```
+
+---
+
+## Perl
+
+**Điều kiện tiên quyết:** Perl 5
+
+```bash
+cd perl/
+perl -I. demo.pl
+```
+
+---
+
+## Lua
+
+**Điều kiện tiên quyết:** Lua (>= 5.1)
+
+```bash
+cd lua/
+lua demo.lua
+```
+
+---
+
+## R
+
+**Điều kiện tiên quyết:** R (>= 3.0)
+
+```bash
+cd r/
+Rscript demo.R
+```
+
+---
+
+## Zig
+
+**Điều kiện tiên quyết:** Trình biên dịch Zig
+
+```bash
+cd zig/
+zig build-exe demo.zig -O ReleaseFast
+./demo
+```
+
+---
+
+## Nim
+
+**Điều kiện tiên quyết:** Trình biên dịch Nim
+
+```bash
+cd nim/
+nim c -d:release -o:demo demo.nim
+./demo
+```
+
+---
+
+## D
+
+**Điều kiện tiên quyết:** DMD hoặc LDC2
+
+```bash
+cd d/
+dmd -O -of=demo demo.d tdigest.d tree234.d
+./demo
+```
+
+---
+
+## C#
+
+**Điều kiện tiên quyết:** .NET SDK hoặc Mono
+
+**Với .NET SDK:**
+
+```bash
+cd csharp/
+dotnet run
+```
+
+**Với Mono:**
+
+```bash
+cd csharp/
+mcs -langversion:latest -out:demo.exe Demo.cs TDigest.cs Tree234.cs
+mono demo.exe
+```
+
+---
+
+## Swift
+
+**Điều kiện tiên quyết:** Trình biên dịch Swift
+
+```bash
+cd swift/
+swiftc -O -o demo tree234.swift tdigest.swift demo.swift
+./demo
+```

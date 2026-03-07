@@ -47,4 +47,6 @@ cdf_value = td.cdf(42.0)        # Nisbah data yang kurang daripada atau sama den
 
 ## Langkah Seterusnya
 
+Projek ini tersedia dalam 28 bahasa pengaturcaraan.
+
 Lihat panduan [Mula Pantas](getting-started.md) untuk mempelajari cara membina dan menjalankan pelaksanaan dalam setiap bahasa.

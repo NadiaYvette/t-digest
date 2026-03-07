@@ -47,4 +47,6 @@ cdf_value = td.cdf(42.0)        # Proporsi data sing kurang utawa padha karo 42.
 
 ## Langkah Sabanjure
 
+Proyek iki kasedhiya ing 28 basa pemrograman.
+
 Deleng pandhuan [Wiwit Cepet](getting-started.md) kanggo sinau carane mbangun lan mbukak implementasi ing saben basa.

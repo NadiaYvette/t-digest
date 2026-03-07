@@ -21,34 +21,34 @@ in Dunning & Ertl (2019).
 
 | Language      | Directory      | Files                              | Style              |
 |---------------|----------------|------------------------------------|---------------------|
-| Ada           | `ada/`         | `tdigest.ads`, `tdigest.adb`      | Imperative/record   |
-| C             | `c/`           | `tdigest.h`, `tdigest.c`          | Procedural          |
-| C++           | `cpp/`         | `tdigest.hpp`, `tdigest.cpp`      | Object-oriented     |
-| C#            | `csharp/`      | `TDigest.cs`                      | Object-oriented     |
-| Common Lisp   | `common-lisp/` | `tdigest.lisp`                    | Struct-based        |
-| D             | `d/`           | `tdigest.d`                       | Struct-based        |
-| Elixir        | `elixir/`      | `tdigest.ex`                      | Functional/struct   |
-| Erlang        | `erlang/`      | `tdigest.erl`                     | Functional/records  |
-| Fortran       | `fortran/`     | `tdigest.f90`                     | Module/derived type |
-| Go            | `go/`          | `tdigest.go`                      | Struct/methods      |
-| Haskell       | `haskell/`     | `TDigest.hs`                      | Pure functional     |
-| Java          | `java/`        | `TDigest.java`                    | Object-oriented     |
-| Julia         | `julia/`       | `TDigest.jl`                      | Multiple dispatch   |
-| Kotlin        | `kotlin/`      | `TDigest.kt`                      | Object-oriented     |
-| Lua           | `lua/`         | `tdigest.lua`                     | Table-based OOP     |
-| Mercury       | `mercury/`     | `tdigest.m`                       | Pure functional     |
-| Nim           | `nim/`         | `tdigest.nim`                     | Object/proc-based   |
-| OCaml         | `ocaml/`       | `tdigest.ml`                      | Functional/record   |
-| Perl          | `perl/`        | `TDigest.pm`                      | OOP (bless-based)   |
-| Prolog        | `prolog/`      | `tdigest.pl`                      | Logic/relational    |
-| Python        | `python/`      | `tdigest.py`                      | Class-based         |
-| R             | `r/`           | `tdigest.R`                       | Environment-based   |
-| Ruby          | `ruby/`        | `tdigest.rb`                      | Object-oriented     |
-| Rust          | `rust/`        | `src/lib.rs`                      | Struct/impl         |
-| Scheme        | `scheme/`      | `tdigest.scm`                     | Functional/mutable  |
-| Standard ML   | `sml/`         | `tdigest.sml`                     | Pure functional     |
-| Swift         | `swift/`       | `tdigest.swift`                   | Struct/mutating     |
-| Zig           | `zig/`         | `tdigest.zig`                     | Procedural/struct   |
+| Ada           | `ada/`         | `tdigest.ads/adb`, `tree234.ads/adb` | Generic 2-3-4 tree  |
+| C             | `c/`           | `tdigest.h`, `tdigest.c`            | Embedded 2-3-4 tree |
+| C++           | `cpp/`         | `tdigest.hpp/cpp`, `tree234.hpp`     | Template 2-3-4 tree |
+| C#            | `csharp/`      | `TDigest.cs`, `Tree234.cs`           | Generic 2-3-4 tree  |
+| Common Lisp   | `common-lisp/` | `tdigest.lisp`, `tree234.lisp`       | Defstruct 2-3-4 tree|
+| D             | `d/`           | `tdigest.d`, `tree234.d`             | Template 2-3-4 tree |
+| Elixir        | `elixir/`      | `tdigest.ex`                         | Functional/struct   |
+| Erlang        | `erlang/`      | `tdigest.erl`                        | Functional/records  |
+| Fortran       | `fortran/`     | `tdigest.f90`                        | Embedded 2-3-4 tree |
+| Go            | `go/`          | `tdigest.go`, `tree234.go`           | Generic 2-3-4 tree  |
+| Haskell       | `haskell/`     | `TDigest.hs`                         | Finger tree         |
+| Java          | `java/`        | `TDigest.java`, `Tree234.java`       | Generic 2-3-4 tree  |
+| Julia         | `julia/`       | `TDigest.jl`, `Tree234.jl`           | Parametric 2-3-4 tree|
+| Kotlin        | `kotlin/`      | `TDigest.kt`, `Tree234.kt`           | Generic 2-3-4 tree  |
+| Lua           | `lua/`         | `tdigest.lua`, `tree234.lua`         | Callback 2-3-4 tree |
+| Mercury       | `mercury/`     | `tdigest.m`, `fingertree.m`, `tdigest_mut.m`, `measured_tree234.m` | Finger tree + typeclass 2-3-4 tree |
+| Nim           | `nim/`         | `tdigest.nim`, `tree234.nim`         | Generic 2-3-4 tree  |
+| OCaml         | `ocaml/`       | `tdigest.ml`                         | Embedded 2-3-4 tree |
+| Perl          | `perl/`        | `TDigest.pm`, `Tree234.pm`           | Coderef 2-3-4 tree  |
+| Prolog        | `prolog/`      | `tdigest.pl`                         | Logic/relational    |
+| Python        | `python/`      | `tdigest.py`, `tree234.py`           | Callback 2-3-4 tree |
+| R             | `r/`           | `tdigest.R`, `tree234.R`             | Environment 2-3-4 tree|
+| Ruby          | `ruby/`        | `tdigest.rb`, `tree234.rb`           | Lambda 2-3-4 tree   |
+| Rust          | `rust/`        | `src/lib.rs`, `src/tree234.rs`       | Trait 2-3-4 tree    |
+| Scheme        | `scheme/`      | `tdigest.scm`                        | Functional/mutable  |
+| Standard ML   | `sml/`         | `tdigest.sml`                        | Augmented BST       |
+| Swift         | `swift/`       | `tdigest.swift`, `tree234.swift`     | Protocol 2-3-4 tree |
+| Zig           | `zig/`         | `tdigest.zig`, `tree234.zig`         | Comptime 2-3-4 tree |
 
 ## Quick Start
 
@@ -68,7 +68,7 @@ cd go/demo && go run .
 cd rust/ && cargo run --release
 
 # Java
-cd java/ && javac TDigest.java Demo.java && java Demo
+cd java/ && javac Tree234.java TDigest.java Demo.java && java Demo
 
 # Python
 cd python/ && python3 demo.py
@@ -128,16 +128,16 @@ cd zig/ && zig build-exe demo.zig -O ReleaseFast && ./demo
 cd nim/ && nim c -d:release -o:demo demo.nim && ./demo
 
 # D
-cd d/ && dmd -O -of=demo demo.d tdigest.d && ./demo
+cd d/ && dmd -O -of=demo demo.d tdigest.d tree234.d && ./demo
 
 # Kotlin
-cd kotlin/ && kotlinc TDigest.kt Demo.kt -include-runtime -d demo.jar && java -jar demo.jar
+cd kotlin/ && kotlinc Tree234.kt TDigest.kt Demo.kt -include-runtime -d demo.jar && java -jar demo.jar
 
 # C#
 cd csharp/ && dotnet run
 
 # Swift
-cd swift/ && swiftc -O -o demo tdigest.swift demo.swift && ./demo
+cd swift/ && swiftc -O -o demo tree234.swift tdigest.swift demo.swift && ./demo
 ```
 
 ## Documentation
@@ -168,14 +168,20 @@ and more.
 
 ## Algorithm Summary
 
-The t-digest maintains a sorted list of weighted centroids that
+The t-digest maintains a sorted collection of weighted centroids that
 approximate the empirical CDF. A scale function (K1 / arcsine) ensures
 that centroids near the tails (q near 0 or 1) are kept small for high
 accuracy, while centroids near the median can grow large to save space.
 
+Internally, most implementations store centroids in an array-backed
+**2-3-4 tree** with four-component monoidal measures (weight, count,
+maxMean, meanWeightSum), giving O(log n) insertion and search. The
+purely functional implementations (Haskell, Mercury, SML) use finger
+trees or augmented BSTs with the same monoidal annotation scheme.
+
 Key properties:
 
-- **O(1) amortized add** (for fixed compression parameter delta)
+- **O(1) amortized add** (buffer-based) or **O(log n) add** (tree-based)
 - **O(delta) space** -- typically a few hundred centroids
 - **Mergeable** -- combine digests from distributed workers in
   O(delta log delta) time
