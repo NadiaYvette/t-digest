@@ -2,9 +2,20 @@
  * Purely functional: every operation returns a new digest value.
  *
  * This implementation uses an augmented balanced BST (weight-balanced tree)
- * for O(log n) quantile queries by cumulative weight and O(1) total
- * count/weight via cached subtree measures, similar to the Haskell
- * finger-tree implementation.
+ * with a four-component measure per node, following the pattern of the
+ * Haskell finger-tree reference implementation:
+ *
+ *   tWeight       -- subtree total weight (for split-by-cumulative-weight)
+ *   tCount        -- subtree centroid count (O(1) size)
+ *   tMaxMean      -- maximum centroid mean in subtree (for split-by-mean)
+ *   tMeanWeightSum -- sum of (mean * weight) for all centroids (O(1) chunk merge)
+ *
+ * This enables:
+ *   - O(log n) insertion via split-by-mean (no buffering needed)
+ *   - O(log n) quantile queries via split-by-cumulative-weight
+ *   - O(log n) CDF queries via split-by-mean
+ *   - O(delta * log n) compression via split-based greedy merge
+ *   - O(1) total weight, centroid count, and chunk mean computation
  *)
 
 (* ------------------------------------------------------------------ *)
@@ -34,22 +45,24 @@ struct
   type centroid = { mean : real, weight : real }
 
   (* ---------------------------------------------------------------- *)
-  (* Augmented weight-balanced BST (size-balanced tree)               *)
+  (* Augmented weight-balanced BST with four-component measure        *)
   (*                                                                  *)
   (* Each node caches:                                                *)
   (*   - subtree total weight (sum of all centroid weights)            *)
   (*   - subtree count (number of centroids)                          *)
-  (* This gives O(1) measure at the root and O(log n) split by       *)
-  (* cumulative weight.                                               *)
+  (*   - maximum centroid mean in subtree                              *)
+  (*   - sum of mean*weight for all centroids in subtree              *)
   (* ---------------------------------------------------------------- *)
 
   datatype tree
     = Leaf
-    | Node of { left   : tree
-              , cent   : centroid
-              , right  : tree
-              , tWeight : real    (* subtree total weight *)
-              , tCount  : int     (* subtree centroid count *)
+    | Node of { left          : tree
+              , cent          : centroid
+              , right         : tree
+              , tWeight       : real    (* subtree total weight *)
+              , tCount        : int     (* subtree centroid count *)
+              , tMaxMean      : real    (* max centroid mean in subtree *)
+              , tMeanWeightSum : real   (* sum of mean*weight in subtree *)
               }
 
   fun treeWeight Leaf = 0.0
@@ -58,10 +71,18 @@ struct
   fun treeCount Leaf = 0
     | treeCount (Node {tCount, ...}) = tCount
 
+  fun treeMaxMean Leaf = Real.negInf
+    | treeMaxMean (Node {tMaxMean, ...}) = tMaxMean
+
+  fun treeMeanWeightSum Leaf = 0.0
+    | treeMeanWeightSum (Node {tMeanWeightSum, ...}) = tMeanWeightSum
+
   fun mkNode (l, c : centroid, r) =
     Node { left = l, cent = c, right = r
          , tWeight = treeWeight l + #weight c + treeWeight r
          , tCount  = treeCount l + 1 + treeCount r
+         , tMaxMean = Real.max (treeMaxMean l, Real.max (#mean c, treeMaxMean r))
+         , tMeanWeightSum = treeMeanWeightSum l + #mean c * #weight c + treeMeanWeightSum r
          }
 
   (* Build a balanced BST from a sorted list in O(n). *)
@@ -86,10 +107,48 @@ struct
     | toList (Node {left, cent, right, ...}) =
         toList left @ [cent] @ toList right
 
+  (* ---------------------------------------------------------------- *)
+  (* Tree operations                                                  *)
+  (* ---------------------------------------------------------------- *)
+
+  (* Split tree into (left, right) where all centroids in left have
+   * mean < x and right starts with the first centroid with mean >= x.
+   * O(log n). *)
+  fun splitByMean (Leaf, _) = (Leaf, Leaf)
+    | splitByMean (Node {left, cent, right, ...}, x) =
+        if #mean cent >= x
+        then
+          let val (ll, lr) = splitByMean (left, x)
+          in (ll, mkNode (lr, cent, right))
+          end
+        else
+          let val (rl, rr) = splitByMean (right, x)
+          in (mkNode (left, cent, rl), rr)
+          end
+
+  (* Split tree into (left, right) where left has cumulative weight <= target
+   * and right has the rest. O(log n). *)
+  fun splitAtWeight (Leaf, _) = (Leaf, Leaf)
+    | splitAtWeight (Node {left, cent, right, ...}, target) =
+        let val leftW = treeWeight left
+        in
+          if target <= leftW
+          then
+            let val (ll, lr) = splitAtWeight (left, target)
+            in (ll, mkNode (lr, cent, right))
+            end
+          else if target < leftW + #weight cent
+          then
+            (left, mkNode (Leaf, cent, right))
+          else
+            let val (rl, rr) = splitAtWeight (right, target - leftW - #weight cent)
+            in (mkNode (left, cent, rl), rr)
+            end
+        end
+
   (* Split by cumulative weight predicate: find the centroid where
    * cumulative weight (from left) exceeds target.
    * Returns (leftTree, matchOpt, rightTree, leftCumWeight, leftCumCount).
-   * leftCumWeight = total weight of centroids strictly to the left of match.
    * This runs in O(log n) for balanced trees. *)
   fun splitByWeight (Leaf, _) = (Leaf, NONE, Leaf, 0.0, 0)
     | splitByWeight (Node {left, cent, right, ...}, target) =
@@ -99,7 +158,6 @@ struct
         in
           if target <= leftW
           then
-            (* Target is in the left subtree *)
             let
               val (ll, m, lr, cumW, cumC) = splitByWeight (left, target)
             in
@@ -110,10 +168,8 @@ struct
             end
           else if target <= leftPlusCent
           then
-            (* This centroid is the split point *)
             (left, SOME cent, right, leftW, treeCount left)
           else
-            (* Target is in the right subtree *)
             let
               val (rl, m, rr, cumW, cumC) =
                 splitByWeight (right, target - leftPlusCent)
@@ -127,20 +183,62 @@ struct
             end
         end
 
-  (* Get the rightmost centroid and its cumulative weight (weight before it). *)
-  fun rightmost Leaf = NONE
-    | rightmost (Node {left, cent, right = Leaf, ...}) =
-        SOME (cent, treeWeight left)
-    | rightmost (Node {left, cent, right, ...}) =
-        (case rightmost right of
-           SOME (c, cumInRight) =>
-             SOME (c, treeWeight left + #weight cent + cumInRight)
+  (* Get the rightmost centroid and the tree without it. *)
+  fun viewRight Leaf = NONE
+    | viewRight (Node {left, cent, right = Leaf, ...}) = SOME (left, cent)
+    | viewRight (Node {left, cent, right, ...}) =
+        (case viewRight right of
+           SOME (rest, rc) => SOME (mkNode (left, cent, rest), rc)
          | NONE => NONE)
 
-  (* Get the leftmost centroid. *)
+  (* Get the leftmost centroid and the tree without it. *)
+  fun viewLeft Leaf = NONE
+    | viewLeft (Node {left = Leaf, cent, right, ...}) = SOME (cent, right)
+    | viewLeft (Node {left, cent, right, ...}) =
+        (case viewLeft left of
+           SOME (lc, rest) => SOME (lc, mkNode (rest, cent, right))
+         | NONE => NONE)
+
+  (* Get the rightmost centroid (without removing). *)
+  fun rightmost Leaf = NONE
+    | rightmost (Node {cent, right = Leaf, ...}) = SOME cent
+    | rightmost (Node {right, ...}) = rightmost right
+
+  (* Get the leftmost centroid (without removing). *)
   fun leftmost Leaf = NONE
     | leftmost (Node {left = Leaf, cent, ...}) = SOME cent
     | leftmost (Node {left, ...}) = leftmost left
+
+  (* Join two trees where all keys in l < c < all keys in r.
+   * Produces a reasonably balanced tree. O(log n). *)
+  fun joinWith (Leaf, c, r) = insertMin (c, r)
+    | joinWith (l, c, Leaf) = insertMax (c, l)
+    | joinWith (l as Node {left=ll, cent=lc, right=lr, tCount=ln, ...},
+                c,
+                r as Node {left=rl, cent=rc, right=rr, tCount=rn, ...}) =
+        if ln > 3 * rn
+        then mkNode (ll, lc, joinWith (lr, c, r))
+        else if rn > 3 * ln
+        then mkNode (joinWith (l, c, rl), rc, rr)
+        else mkNode (l, c, r)
+
+  (* Insert at the minimum (leftmost) position. *)
+  and insertMin (c, Leaf) = mkNode (Leaf, c, Leaf)
+    | insertMin (c, Node {left, cent, right, ...}) =
+        mkNode (insertMin (c, left), cent, right)
+
+  (* Insert at the maximum (rightmost) position. *)
+  and insertMax (c, Leaf) = mkNode (Leaf, c, Leaf)
+    | insertMax (c, Node {left, cent, right, ...}) =
+        mkNode (left, cent, insertMax (c, right))
+
+  (* Join two trees where all keys in l < all keys in r. O(log n). *)
+  fun treeJoin (Leaf, r) = r
+    | treeJoin (l, Leaf) = l
+    | treeJoin (l, r) =
+        case viewLeft r of
+          SOME (c, r') => joinWith (l, c, r')
+        | NONE => l
 
   (* Get the centroid at a given 0-based index, plus cumulative weight before it. *)
   fun nthWithCum (Leaf, _) = NONE
@@ -157,18 +255,16 @@ struct
         end
 
   (* ---------------------------------------------------------------- *)
-  (* t-digest type using the tree                                     *)
+  (* t-digest type                                                    *)
   (* ---------------------------------------------------------------- *)
 
   type t =
-    { centroids   : tree
-    , buffer      : centroid list
-    , bufferLen   : int
-    , totalWeight : real
-    , minVal      : real
-    , maxVal      : real
-    , delta       : real
-    , bufferCap   : int
+    { centroids    : tree
+    , totalWeight  : real
+    , minVal       : real
+    , maxVal       : real
+    , delta        : real
+    , maxCentroids : int
     }
 
   val pi = Math.pi
@@ -177,39 +273,21 @@ struct
   fun k (delta : real) (q : real) : real =
     (delta / (2.0 * pi)) * Math.asin (2.0 * q - 1.0)
 
+  (* K_1 inverse: q(k, delta) = (1 + sin(2 pi k / delta)) / 2 *)
+  fun kInv (delta : real) (kVal : real) : real =
+    (1.0 + Math.sin (2.0 * pi * kVal / delta)) / 2.0
+
   (* Create a fresh empty digest with the given compression parameter. *)
   fun create (delta : real) : t =
-    { centroids   = Leaf
-    , buffer      = []
-    , bufferLen   = 0
-    , totalWeight = 0.0
-    , minVal      = Real.posInf
-    , maxVal      = Real.negInf
-    , delta       = delta
-    , bufferCap   = Real.ceil (delta * 5.0)
+    { centroids    = Leaf
+    , totalWeight  = 0.0
+    , minVal       = Real.posInf
+    , maxVal       = Real.negInf
+    , delta        = delta
+    , maxCentroids = Real.ceil (delta * 3.0)
     }
 
   (* ---- helpers --------------------------------------------------- *)
-
-  (* Sort a centroid list by mean, ascending. Simple merge-sort. *)
-  fun sortCentroids ([] : centroid list) : centroid list = []
-    | sortCentroids [x] = [x]
-    | sortCentroids xs =
-        let
-          fun split ([], left, right) = (left, right)
-            | split ([x], left, right) = (x :: left, right)
-            | split (a :: b :: rest, left, right) =
-                split (rest, a :: left, b :: right)
-          val (l, r) = split (xs, [], [])
-          fun mergeL ([], ys) = ys
-            | mergeL (xs, []) = xs
-            | mergeL (x :: xs', y :: ys') =
-                if #mean x <= #mean y
-                then x :: mergeL (xs', y :: ys')
-                else y :: mergeL (x :: xs', ys')
-        in
-          mergeL (sortCentroids l, sortCentroids r)
-        end
 
   (* Weighted-mean merge of two centroids. *)
   fun mergeCentroid (a : centroid) (b : centroid) : centroid =
@@ -221,106 +299,164 @@ struct
       }
     end
 
-  (* ---- compress (greedy merge on lists, rebuild tree) ------------ *)
+  (* ---- add (O(log n) direct insertion) ----------------------------- *)
 
-  fun compressImpl (td : t) : t =
+  fun add (td : t) (value : real) (weight : real) : t =
     let
-      val { centroids, buffer, bufferLen = _, totalWeight = n, minVal, maxVal,
-            delta = d, bufferCap } = td
+      val { centroids = cs, totalWeight = oldN, minVal, maxVal,
+            delta = d, maxCentroids } = td
+      val n = oldN + weight
+      val newMin = Real.min (minVal, value)
+      val newMax = Real.max (maxVal, value)
+      val newC : centroid = { mean = value, weight = weight }
     in
-      if null buffer andalso treeCount centroids <= 1
+      if treeCount cs = 0
+      then
+        { centroids    = mkNode (Leaf, newC, Leaf)
+        , totalWeight  = n
+        , minVal       = newMin
+        , maxVal       = newMax
+        , delta        = d
+        , maxCentroids = maxCentroids
+        }
+      else
+        let
+          val (left, right) = splitByMean (cs, value)
+          val leftWeight = treeWeight left
+          val kf = k d
+
+          (* Check left neighbor *)
+          val leftNeighbor =
+            case viewRight left of
+              NONE => NONE
+            | SOME (leftRest, lc) =>
+                let
+                  val cumBefore = treeWeight leftRest
+                  val proposed = #weight lc + weight
+                  val q0 = cumBefore / n
+                  val q1 = (cumBefore + proposed) / n
+                  val canMerge = kf q1 - kf q0 <= 1.0
+                  val dist = Real.abs (#mean lc - value)
+                in
+                  if canMerge
+                  then SOME (leftRest, lc, dist)
+                  else NONE
+                end
+
+          (* Check right neighbor *)
+          val rightNeighbor =
+            case viewLeft right of
+              NONE => NONE
+            | SOME (rc, rightRest) =>
+                let
+                  val proposed = #weight rc + weight
+                  val q0 = leftWeight / n
+                  val q1 = (leftWeight + proposed) / n
+                  val canMerge = kf q1 - kf q0 <= 1.0
+                  val dist = Real.abs (#mean rc - value)
+                in
+                  if canMerge
+                  then SOME (rightRest, rc, dist)
+                  else NONE
+                end
+
+          val newCentroids =
+            case (leftNeighbor, rightNeighbor) of
+              (SOME (leftRest, lc, ldist), SOME (rightRest, rc, rdist)) =>
+                if ldist <= rdist
+                then joinWith (leftRest, mergeCentroid lc newC, right)
+                else joinWith (left, mergeCentroid rc newC, rightRest)
+            | (SOME (leftRest, lc, _), NONE) =>
+                joinWith (leftRest, mergeCentroid lc newC, right)
+            | (NONE, SOME (rightRest, rc, _)) =>
+                joinWith (left, mergeCentroid rc newC, rightRest)
+            | (NONE, NONE) =>
+                joinWith (left, newC, right)
+
+          val td' =
+            { centroids    = newCentroids
+            , totalWeight  = n
+            , minVal       = newMin
+            , maxVal       = newMax
+            , delta        = d
+            , maxCentroids = maxCentroids
+            }
+        in
+          if treeCount newCentroids > maxCentroids
+          then compressImpl td'
+          else td'
+        end
+    end
+
+  (* ---- compress (split-based O(delta * log n)) -------------------- *)
+
+  and compressImpl (td : t) : t =
+    let
+      val { centroids = cs, totalWeight = n, minVal, maxVal,
+            delta = d, maxCentroids } = td
+      val cnt = treeCount cs
+    in
+      if cnt <= 1
       then td
       else
         let
-          val all = sortCentroids (toList centroids @ buffer)
+          (* K1 range: k(0) = -delta/2, k(1) = +delta/2 *)
+          val kMin = k d 0.0   (* = -delta/2 *)
+          val kMax = k d 1.0   (* = +delta/2 *)
+          val jMin = Real.ceil kMin
+          val jMax = Real.floor kMax
 
-          (* Greedy merge walk.
-             current   : centroid being built
-             wsf       : weight before `current` (weight_so_far)
-             rest      : remaining sorted centroids
-             acc       : finished centroids in reverse order *)
-          fun walk (current : centroid)
-                   (wsf : real)
-                   ([] : centroid list)
-                   (acc : centroid list) : centroid list =
-                rev (current :: acc)
-            | walk current wsf (item :: rest) acc =
+          (* Build boundaries: cumulative weight at each integer k-value *)
+          fun buildBoundaries (j, acc) =
+            if j > jMax then rev acc
+            else buildBoundaries (j + 1, (kInv d (Real.fromInt j) * n) :: acc)
+
+          val boundaries = buildBoundaries (jMin + 1, [])
+
+          (* Merge all centroids in a chunk into one using the measure. O(1). *)
+          fun mergeChunk (chunk : tree) : centroid option =
+            let val w = treeWeight chunk
+            in
+              if w <= 0.0 then NONE
+              else SOME { mean = treeMeanWeightSum chunk / w, weight = w }
+            end
+
+          (* Split-and-merge at each boundary *)
+          fun splitMerge ([], remaining, acc) =
+                (case mergeChunk remaining of
+                   NONE => rev acc
+                 | SOME c => rev (c :: acc))
+            | splitMerge (b :: bs, remaining, acc) =
                 let
-                  val proposed = #weight current + #weight item
-                  val q0 = wsf / n
-                  val q1 = (wsf + proposed) / n
-                  val canMerge =
-                    (proposed <= 1.0 andalso not (null rest))
-                    orelse (k d q1 - k d q0 <= 1.0)
+                  val (chunk, rest) = splitAtWeight (remaining, b)
                 in
-                  if canMerge
-                  then walk (mergeCentroid current item) wsf rest acc
-                  else walk item
-                            (wsf + #weight current)
-                            rest
-                            (current :: acc)
+                  case mergeChunk chunk of
+                    NONE => splitMerge (bs, rest, acc)
+                  | SOME c => splitMerge (bs, rest, c :: acc)
                 end
+
+          val mergedList = splitMerge (boundaries, cs, [])
         in
-          case all of
-            [] =>
-              { centroids = Leaf, buffer = [], bufferLen = 0,
-                totalWeight = n,
-                minVal = minVal, maxVal = maxVal,
-                delta = d, bufferCap = bufferCap }
-          | first :: rest =>
-              let val merged = walk first 0.0 rest []
-              in
-                { centroids   = fromSortedList merged
-                , buffer      = []
-                , bufferLen   = 0
-                , totalWeight = n
-                , minVal      = minVal
-                , maxVal      = maxVal
-                , delta       = d
-                , bufferCap   = bufferCap
-                }
-              end
+          { centroids    = fromSortedList mergedList
+          , totalWeight  = n
+          , minVal       = minVal
+          , maxVal       = maxVal
+          , delta        = d
+          , maxCentroids = maxCentroids
+          }
         end
     end
 
   val compress = compressImpl
 
-  (* ---- add ------------------------------------------------------- *)
-
-  fun add (td : t) (value : real) (weight : real) : t =
-    let
-      val { centroids, buffer, bufferLen, totalWeight = n, minVal, maxVal,
-            delta = d, bufferCap } = td
-      val newBuf = { mean = value, weight = weight } :: buffer
-      val newBufLen = bufferLen + 1
-      val newN   = n + weight
-      val newMin = Real.min (minVal, value)
-      val newMax = Real.max (maxVal, value)
-      val td' =
-        { centroids   = centroids
-        , buffer      = newBuf
-        , bufferLen   = newBufLen
-        , totalWeight = newN
-        , minVal      = newMin
-        , maxVal      = newMax
-        , delta       = d
-        , bufferCap   = bufferCap
-        }
-    in
-      if newBufLen >= bufferCap
-      then compressImpl td'
-      else td'
-    end
-
   (* ---- quantile (O(log n) via tree split) ------------------------ *)
 
   fun quantile (td : t) (q : real) : real option =
     let
-      val td' = if null (#buffer td) then td else compressImpl td
-      val cs  = #centroids td'
-      val n   = #totalWeight td'
-      val mn  = #minVal td'
-      val mx  = #maxVal td'
+      val cs  = #centroids td
+      val n   = #totalWeight td
+      val mn  = #minVal td
+      val mx  = #maxVal td
       val numCentroids = treeCount cs
     in
       if numCentroids = 0 then NONE
@@ -390,21 +526,22 @@ struct
           | NONE =>
               (* target beyond all centroids; use rightmost *)
               (case rightmost cs of
-                 SOME (c, cumBefore) =>
-                   SOME (interpolateAt (numCentroids - 1) cumBefore c)
+                 SOME c =>
+                   let val cumBefore = n - #weight c
+                   in SOME (interpolateAt (numCentroids - 1) cumBefore c)
+                   end
                | NONE => SOME mx)
         end
     end
 
-  (* ---- cdf (O(log n) initial locate, then local walk) ------------ *)
+  (* ---- cdf (O(log n) via split-by-mean) -------------------------- *)
 
   fun cdf (td : t) (x : real) : real option =
     let
-      val td' = if null (#buffer td) then td else compressImpl td
-      val cs  = #centroids td'
-      val n   = #totalWeight td'
-      val mn  = #minVal td'
-      val mx  = #maxVal td'
+      val cs  = #centroids td
+      val n   = #totalWeight td
+      val mn  = #minVal td
+      val mx  = #maxVal td
       val numCentroids = treeCount cs
     in
       if numCentroids = 0 then NONE
@@ -412,71 +549,77 @@ struct
       else if x >= mx then SOME 1.0
       else
         let
-          (* For CDF we walk the sorted list. We could do a BST search by mean
-           * for a partial O(log n) optimization, but the list walk matches
-           * the original algorithm's interpolation logic exactly. The primary
-           * O(log n) benefit is in quantile queries via splitByWeight. *)
-          val v   = Vector.fromList (toList cs)
-          val len = Vector.length v
-          fun centAt i = Vector.sub (v, i)
+          val (left, right) = splitByMean (cs, x)
 
-          fun walk (i : int) (cumulative : real) : real =
-            if i >= len then 1.0
+          fun cdfAtFirst (c : centroid) : real =
+            if x < #mean c
+            then
+              let
+                val innerW = #weight c / 2.0
+                val frac = if Real.== (#mean c, mn) then 1.0
+                           else (x - mn) / (#mean c - mn)
+              in
+                (innerW * frac) / n
+              end
+            else (#weight c / 2.0) / n
+
+          fun cdfAtLast (c : centroid) (cumBefore : real) : real =
+            if x > #mean c
+            then
+              let
+                val halfW = #weight c / 2.0
+                val rightW = n - cumBefore - halfW
+                val frac = if Real.== (mx, #mean c) then 0.0
+                           else (x - #mean c) / (mx - #mean c)
+              in
+                (cumBefore + halfW + rightW * frac) / n
+              end
+            else (cumBefore + #weight c / 2.0) / n
+
+          fun cdfBetween (lc : centroid) (lcCum : real)
+                         (rc : centroid) (rcCum : real) : real =
+            if x <= #mean lc then (lcCum + #weight lc / 2.0) / n
+            else if x >= #mean rc then (rcCum + #weight rc / 2.0) / n
             else
               let
-                val c  = centAt i
-                val cw = #weight c
-                val cm = #mean c
-                val mid = cumulative + cw / 2.0
+                val lMid = lcCum + #weight lc / 2.0
+                val rMid = rcCum + #weight rc / 2.0
+                val frac = if Real.== (#mean lc, #mean rc) then 0.5
+                           else (x - #mean lc) / (#mean rc - #mean lc)
               in
-                (* First centroid: left boundary region *)
-                if i = 0 andalso x < cm
-                then
-                  let
-                    val innerW = cw / 2.0
-                    val frac = if Real.== (cm, mn) then 1.0
-                               else (x - mn) / (cm - mn)
-                  in
-                    (innerW * frac) / n
-                  end
-                else if i = 0 andalso Real.== (x, cm)
-                then (cw / 2.0) / n
-
-                (* Last centroid: right boundary region *)
-                else if i = len - 1
-                then
-                  if x > cm
-                  then
-                    let
-                      val rightW = n - cumulative - cw / 2.0
-                      val frac = if Real.== (mx, cm) then 0.0
-                                 else (x - cm) / (mx - cm)
-                    in
-                      (cumulative + cw / 2.0 + rightW * frac) / n
-                    end
-                  else (cumulative + cw / 2.0) / n
-
-                (* Interior *)
-                else
-                  let
-                    val nc = centAt (i + 1)
-                    val ncm = #mean nc
-                    val nextCum = cumulative + cw
-                    val nextMid = nextCum + #weight nc / 2.0
-                  in
-                    if x < ncm
-                    then
-                      if Real.== (cm, ncm)
-                      then (mid + (nextMid - mid) / 2.0) / n
-                      else
-                        let val frac = (x - cm) / (ncm - cm)
-                        in (mid + frac * (nextMid - mid)) / n
-                        end
-                    else walk (i + 1) (cumulative + cw)
-                  end
+                (lMid + frac * (rMid - lMid)) / n
               end
         in
-          SOME (walk 0 0.0)
+          case (viewRight left, viewLeft right) of
+            (NONE, SOME (rc, _)) =>
+              (* x is before all centroids *)
+              SOME (cdfAtFirst rc)
+          | (_, NONE) =>
+              (* x is after all centroids *)
+              (case viewRight left of
+                 SOME (lRest, lc) =>
+                   SOME (cdfAtLast lc (treeWeight lRest))
+               | NONE => SOME 1.0)
+          | (SOME (lRest, lc), SOME (rc, _)) =>
+              let
+                val lcCum = treeWeight lRest
+                val lcIdx = treeCount lRest
+                val rcIdx = treeCount left
+              in
+                if x <= #mean lc
+                then
+                  if lcIdx = 0
+                  then SOME (cdfAtFirst lc)
+                  else
+                    (case viewRight lRest of
+                       SOME (llRest, llc) =>
+                         SOME (cdfBetween llc (treeWeight llRest) lc lcCum)
+                     | NONE => SOME (cdfAtFirst lc))
+                else
+                  if rcIdx = numCentroids - 1 andalso x > #mean rc
+                  then SOME (cdfAtLast rc (treeWeight left))
+                  else SOME (cdfBetween lc lcCum rc (treeWeight left))
+              end
         end
     end
 
@@ -484,22 +627,18 @@ struct
 
   fun merge (td1 : t) (td2 : t) : t =
     let
-      val td2' = if null (#buffer td2) then td2 else compressImpl td2
-      val otherCentroids = toList (#centroids td2')
+      val otherCentroids = toList (#centroids td2)
       fun addAll td [] = td
         | addAll td ((c : centroid) :: rest) =
             addAll (add td (#mean c) (#weight c)) rest
     in
-      addAll td1 otherCentroids
+      compress (addAll td1 otherCentroids)
     end
 
   (* ---- accessors ------------------------------------------------- *)
 
   fun totalWeight (td : t) = #totalWeight td
 
-  fun centroidCount (td : t) =
-    let val td' = if null (#buffer td) then td else compressImpl td
-    in treeCount (#centroids td')
-    end
+  fun centroidCount (td : t) = treeCount (#centroids td)
 
 end (* structure TDigest *)

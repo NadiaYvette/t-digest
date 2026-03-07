@@ -23,7 +23,7 @@
 % Types
 %-----------------------------------------------------------------------------%
 
-:- import_module fingertree.   % For the centroid type.
+:- import_module tdigest.   % For the centroid type.
 
 :- type mut_tdigest
     --->    mut_tdigest(
