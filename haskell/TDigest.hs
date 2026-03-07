@@ -10,8 +10,13 @@
 -- of quantile (percentile) queries with high accuracy in the tails.
 --
 -- This implementation uses a 'Data.FingerTree.FingerTree' from the
--- @fingertree@ package for O(log n) quantile queries by cumulative weight
--- and O(1) total count\/weight via a monoidal measure.
+-- @fingertree@ package with a three-component monoidal measure
+-- @(weight, count, maxMean)@ enabling:
+--
+-- * O(log n) insertion via split-by-mean (no buffering needed)
+-- * O(log n) quantile queries via split-by-cumulative-weight
+-- * O(log n) CDF queries via split-by-mean
+-- * O(1) total weight and centroid count
 --
 -- == Quick start
 --
@@ -70,18 +75,28 @@ import Data.Ord (comparing)
 -- Measure (monoidal annotation for the finger tree)
 -- ---------------------------------------------------------------------------
 
--- | Monoidal measure tracking total weight and centroid count in a subtree.
+-- | Monoidal measure tracking total weight, centroid count, and maximum mean
+-- in a subtree. The max-mean component enables O(log n) splitting by mean
+-- value (for sorted-order insertion and CDF queries), while the weight
+-- component enables O(log n) splitting by cumulative weight (for quantile
+-- queries).
 data Measure = Measure
   { mWeight :: {-# UNPACK #-} !Double,
-    mCount :: {-# UNPACK #-} !Int
+    mCount :: {-# UNPACK #-} !Int,
+    -- | Maximum centroid mean in this subtree. Since centroids are kept
+    -- sorted by mean, this equals the rightmost centroid's mean. The
+    -- monotonicity of max-mean over a sorted sequence is what makes
+    -- @FT.split (\m -> mMaxMean m >= x)@ find the correct insertion point.
+    mMaxMean :: {-# UNPACK #-} !Double
   }
   deriving (Show)
 
 instance Semigroup Measure where
-  (Measure w1 c1) <> (Measure w2 c2) = Measure (w1 + w2) (c1 + c2)
+  (Measure w1 c1 mm1) <> (Measure w2 c2 mm2) =
+    Measure (w1 + w2) (c1 + c2) (max mm1 mm2)
 
 instance Monoid Measure where
-  mempty = Measure 0 0
+  mempty = Measure 0 0 (-(1 / 0)) -- -Infinity for max identity
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -101,23 +116,21 @@ data Centroid = Centroid
   deriving (Show)
 
 instance Measured Measure Centroid where
-  measure c = Measure (cWeight c) 1
+  measure c = Measure (cWeight c) 1 (cMean c)
 
 -- | The t-digest data structure for online quantile estimation.
 --
--- Internally, it maintains a 'FingerTree' of 'Centroid's (sorted by mean)
--- and an unsorted buffer list. When the buffer reaches capacity, a
--- compression pass merges buffer entries into the centroid tree using the
--- K1 scale function to enforce the size invariant: centroids near the tails
--- are kept small (high accuracy) while centroids near the median may be
--- large (saving space).
+-- Internally, it maintains a 'FingerTree' of 'Centroid's sorted by mean.
+-- New values are inserted directly into the tree at the correct sorted
+-- position in O(log n) using split-by-mean, merging with the nearest
+-- existing centroid when the K1 scale function constraint allows.
+--
+-- An explicit 'compress' (greedy merge) pass is available for use after
+-- 'merge' operations or to compact the digest when centroid count grows
+-- beyond the ideal bound.
 data TDigest = TDigest
   { -- | Sorted (by mean) finger tree of centroids.
     tdCentroids :: !(FingerTree Measure Centroid),
-    -- | Unsorted buffered additions awaiting compression.
-    tdBuffer :: ![Centroid],
-    -- | Current buffer length (avoids O(n) length calls).
-    tdBufferLen :: {-# UNPACK #-} !Int,
     -- | Sum of all weights ever added.
     tdTotalWeight :: !Double,
     -- | Minimum value seen.
@@ -126,8 +139,8 @@ data TDigest = TDigest
     tdMax :: !Double,
     -- | Compression parameter (typically 100).
     tdDelta :: !Double,
-    -- | Buffer capacity: @ceiling(delta * 5)@.
-    tdBufferCap :: !Int
+    -- | Maximum centroid count before auto-compress.
+    tdMaxCentroids :: {-# UNPACK #-} !Int
   }
   deriving (Show)
 
@@ -155,13 +168,11 @@ emptyWith :: Double -> TDigest
 emptyWith delta =
   TDigest
     { tdCentroids = FT.empty,
-      tdBuffer = [],
-      tdBufferLen = 0,
       tdTotalWeight = 0,
       tdMin = 1 / 0, -- +Infinity
       tdMax = -(1 / 0), -- -Infinity
       tdDelta = delta,
-      tdBufferCap = ceiling (delta * 5)
+      tdMaxCentroids = ceiling (delta * 3)
     }
 
 -- ---------------------------------------------------------------------------
@@ -182,13 +193,19 @@ ftToList ft = case FT.viewl ft of
   EmptyL -> []
   x :< rest -> x : ftToList rest
 
+-- | Split the tree to find where mean >= x. The left subtree has all
+-- centroids with mean < x, the right subtree starts at mean >= x.
+-- O(log n).
+splitByMean :: Double -> FingerTree Measure Centroid -> (FingerTree Measure Centroid, FingerTree Measure Centroid)
+splitByMean x = FT.split (\m -> mMaxMean m >= x)
+
 -- ---------------------------------------------------------------------------
 -- Adding values
 -- ---------------------------------------------------------------------------
 
 -- | Add a single value with weight 1 to the digest.
 --
--- Triggers automatic compression when the internal buffer reaches capacity.
+-- O(log n) via direct finger tree insertion.
 --
 -- >>> quantile 0.5 (add 42.0 empty)
 -- Just 42.0
@@ -197,49 +214,143 @@ add x = addWeighted x 1
 
 -- | Add a value with a given weight to the digest.
 --
--- This is useful when ingesting pre-aggregated data (e.g., centroids from
--- another digest during a merge operation).
+-- O(log n). Splits the finger tree at the insertion point by mean,
+-- checks whether the new value can be merged with the nearest existing
+-- centroid (left or right neighbor) without violating the K1 scale
+-- function constraint, and either merges or inserts a new centroid.
 --
 -- >>> totalWeight (addWeighted 10.0 5.0 empty)
 -- 5.0
 addWeighted :: Double -> Double -> TDigest -> TDigest
 addWeighted x w td =
-  let newBufLen = tdBufferLen td + 1
+  let n = tdTotalWeight td + w
+      newMin = min x (tdMin td)
+      newMax = max x (tdMax td)
+      delta = tdDelta td
+      cs = tdCentroids td
+      newC = Centroid x w
       td' =
-        td
-          { tdBuffer = Centroid x w : tdBuffer td,
-            tdBufferLen = newBufLen,
-            tdTotalWeight = tdTotalWeight td + w,
-            tdMin = min x (tdMin td),
-            tdMax = max x (tdMax td)
-          }
-   in if newBufLen >= tdBufferCap td'
+        if FT.null cs
+          then
+            td
+              { tdCentroids = FT.singleton newC,
+                tdTotalWeight = n,
+                tdMin = newMin,
+                tdMax = newMax
+              }
+          else
+            let -- Split at insertion point: left has mean < x, right has mean >= x
+                (left, right) = splitByMean x cs
+                leftMeasure = FT.measure left
+                leftWeight = mWeight leftMeasure
+                -- Try merging with the nearest centroid
+                result = tryMergeNeighbor delta n leftWeight left right newC
+             in td
+                  { tdCentroids = result,
+                    tdTotalWeight = n,
+                    tdMin = newMin,
+                    tdMax = newMax
+                  }
+   in if mCount (FT.measure (tdCentroids td')) > tdMaxCentroids td'
         then compress td'
         else td'
+
+-- | Try to merge a new centroid with the nearest existing centroid.
+-- If the K1 constraint allows merging with either the left neighbor
+-- (rightmost of left subtree) or the right neighbor (leftmost of right
+-- subtree), merge with the closer one. Otherwise insert as a new centroid.
+tryMergeNeighbor ::
+  Double ->
+  Double ->
+  Double ->
+  FingerTree Measure Centroid ->
+  FingerTree Measure Centroid ->
+  Centroid ->
+  FingerTree Measure Centroid
+tryMergeNeighbor delta n leftWeight left right newC =
+  let x = cMean newC
+      -- Check left neighbor (rightmost of left subtree)
+      leftNeighbor = case FT.viewr left of
+        EmptyR -> Nothing
+        leftRest :> lc ->
+          let cumBefore = mWeight (FT.measure leftRest)
+              proposed = cWeight lc + cWeight newC
+              q0 = cumBefore / n
+              q1 = (cumBefore + proposed) / n
+              k = kScale delta
+              canMerge = k q1 - k q0 <= 1.0
+              dist = abs (cMean lc - x)
+           in if canMerge
+                then Just (leftRest, lc, dist, cumBefore)
+                else Nothing
+
+      -- Check right neighbor (leftmost of right subtree)
+      rightNeighbor = case FT.viewl right of
+        EmptyL -> Nothing
+        rc :< rightRest ->
+          let cumBefore = leftWeight
+              proposed = cWeight rc + cWeight newC
+              q0 = cumBefore / n
+              q1 = (cumBefore + proposed) / n
+              k = kScale delta
+              canMerge = k q1 - k q0 <= 1.0
+              dist = abs (cMean rc - x)
+           in if canMerge
+                then Just (rightRest, rc, dist, cumBefore)
+                else Nothing
+   in case (leftNeighbor, rightNeighbor) of
+        -- Merge with left neighbor (closer or only option)
+        (Just (leftRest, lc, ldist, _), Just (_, rc, rdist, _))
+          | ldist <= rdist ->
+              let merged = mergeCentroid lc newC
+               in (leftRest |> merged) FT.>< right
+          | otherwise ->
+              let merged = mergeCentroid rc newC
+                  (_ :< rightRest) = FT.viewl right
+               in left FT.>< (merged <| rightRest)
+        (Just (leftRest, lc, _, _), Nothing) ->
+          let merged = mergeCentroid lc newC
+           in (leftRest |> merged) FT.>< right
+        (Nothing, Just (_, rc, _, _)) ->
+          let merged = mergeCentroid rc newC
+              (_ :< rightRest) = FT.viewl right
+           in left FT.>< (merged <| rightRest)
+        -- Cannot merge with either neighbor: insert new centroid
+        (Nothing, Nothing) ->
+          left FT.>< (newC <| right)
+
+-- | Merge a centroid into another using weighted mean.
+mergeCentroid :: Centroid -> Centroid -> Centroid
+mergeCentroid a b =
+  let w = cWeight a + cWeight b
+      m = (cMean a * cWeight a + cMean b * cWeight b) / w
+   in Centroid m w
 
 -- ---------------------------------------------------------------------------
 -- Compression (greedy merge)
 -- ---------------------------------------------------------------------------
 
--- | Compress the digest by merging the buffer into the centroid list.
+-- | Compress the digest by performing a greedy merge pass over all centroids.
 --
--- Normally this is triggered automatically when the buffer fills up.
--- You can call it explicitly if you want to ensure the digest is in
--- a compressed state (e.g., before serialization).
+-- This is the standard Dunning greedy merge: walk centroids left to right
+-- (sorted by mean) and merge adjacent ones when the K1 scale function
+-- constraint allows. The result is a minimal set of centroids that still
+-- satisfies the accuracy guarantees.
+--
+-- With O(log n) incremental insertion, explicit compression is typically
+-- only needed after 'merge' operations. It is O(n) in the number of
+-- centroids (which is itself O(delta)).
 compress :: TDigest -> TDigest
 compress td
-  | tdBufferLen td == 0 && mCount (FT.measure (tdCentroids td)) <= 1 = td
+  | cnt <= 1 = td
   | otherwise =
-      let allItems = ftToList (tdCentroids td) ++ tdBuffer td
-          sorted = sortBy (comparing cMean) allItems
+      let sorted = ftToList (tdCentroids td)
           n = tdTotalWeight td
           delta = tdDelta td
           merged = greedyMerge delta n sorted
-       in td
-            { tdCentroids = FT.fromList merged,
-              tdBuffer = [],
-              tdBufferLen = 0
-            }
+       in td {tdCentroids = FT.fromList merged}
+  where
+    cnt = mCount (FT.measure (tdCentroids td))
 
 -- | Greedy merge pass: walk sorted centroids and merge adjacent ones
 -- when the scale function constraint allows it.
@@ -264,13 +375,6 @@ greedyMerge delta n (c : cs) = go 0 c cs
         q0 = weightSoFar / n
         q1 = (weightSoFar + proposed) / n
 
--- | Merge a centroid into another using weighted mean.
-mergeCentroid :: Centroid -> Centroid -> Centroid
-mergeCentroid a b =
-  let w = cWeight a + cWeight b
-      m = (cMean a * cWeight a + cMean b * cWeight b) / w
-   in Centroid m w
-
 -- ---------------------------------------------------------------------------
 -- Quantile estimation
 -- ---------------------------------------------------------------------------
@@ -280,10 +384,7 @@ mergeCentroid a b =
 -- Returns 'Nothing' if the digest is empty, otherwise 'Just' the estimated
 -- value. The q parameter is clamped to [0, 1].
 --
--- The estimate is most accurate near the tails (q close to 0 or 1) due
--- to the K1 scale function.
---
--- Uses 'Data.FingerTree.split' for O(log n) lookup by cumulative weight.
+-- O(log n) via 'FT.split' on cumulative weight.
 --
 -- >>> let td = foldl (flip add) empty [1..1000]
 -- >>> quantile 0.5 td
@@ -291,7 +392,7 @@ mergeCentroid a b =
 -- >>> quantile 0.0 td
 -- Just 1.0
 quantile :: Double -> TDigest -> Maybe Double
-quantile q td0
+quantile q td
   | numCentroids == 0 = Nothing
   | numCentroids == 1 =
       case FT.viewl cs of
@@ -299,7 +400,6 @@ quantile q td0
         EmptyL -> Nothing
   | otherwise = Just (findQuantile (clamp 0 1 q))
   where
-    td = if tdBufferLen td0 == 0 then td0 else compress td0
     cs = tdCentroids td
     n = tdTotalWeight td
     mn = tdMin td
@@ -309,25 +409,21 @@ quantile q td0
     findQuantile :: Double -> Double
     findQuantile q' =
       let target = q' * n
-          -- Split the tree at the point where cumulative weight exceeds target.
-          -- After the split: left contains centroids whose cumulative weight <= target,
-          -- right starts with the centroid that pushes cumulative weight past target.
+          -- Split the tree where cumulative weight exceeds target
           (left, right) = FT.split (\m -> mWeight m > target) cs
           leftWeight = mWeight (FT.measure left)
           leftCount = mCount (FT.measure left)
        in case FT.viewl right of
             EmptyL ->
-              -- target is beyond all centroids; use the last centroid
+              -- target beyond all centroids: use last
               case FT.viewr left of
                 _ :> lastC -> interpolateRight lastC (leftWeight - cWeight lastC) target
                 EmptyR -> mx
             cur :< rightRest ->
-              let cumulative = leftWeight -- weight before cur
-                  i = leftCount -- 0-based index of cur
-               in interpolateAt i cumulative cur rightRest target
+              interpolateAt leftCount leftWeight cur left rightRest target
 
-    interpolateAt :: Int -> Double -> Centroid -> FingerTree Measure Centroid -> Double -> Double
-    interpolateAt i cumulative c rest target
+    interpolateAt :: Int -> Double -> Centroid -> FingerTree Measure Centroid -> FingerTree Measure Centroid -> Double -> Double
+    interpolateAt i cumulative c left rest target
       -- Left boundary: interpolate between min and first centroid
       | i == 0 && target < cWeight c / 2 =
           if cWeight c == 1
@@ -357,8 +453,9 @@ quantile q td0
                                   else (target - mid) / (nextMid - mid)
                            in cMean c + frac * (cMean nextC - cMean c)
                         else
-                          -- Need to advance to the next centroid
-                          interpolateAt (i + 1) (cumulative + cWeight c) nextC (ftTail rest) target
+                          -- Advance: split again from the rest
+                          let newLeft = left FT.>< FT.singleton c
+                           in interpolateAt (i + 1) (cumulative + cWeight c) nextC newLeft (ftTail rest) target
                 EmptyL -> cMean c
 
     interpolateRight :: Centroid -> Double -> Double -> Double
@@ -387,8 +484,7 @@ quantile q td0
 -- value in [0, 1] representing the estimated fraction of values less than
 -- or equal to @x@.
 --
--- Uses 'Data.FingerTree.split' to locate the centroid neighbourhood by
--- cumulative weight, then interpolates between centroid midpoints.
+-- O(log n) via 'FT.split' on mean value using the max-mean measure.
 --
 -- >>> let td = foldl (flip add) empty [1..1000]
 -- >>> cdf 500.0 td
@@ -396,64 +492,93 @@ quantile q td0
 -- >>> cdf 0.0 td
 -- Just 0.0
 cdf :: Double -> TDigest -> Maybe Double
-cdf x td0
+cdf x td
   | numCentroids == 0 = Nothing
   | x <= mn = Just 0
   | x >= mx = Just 1
-  | otherwise = Just (walkCdf x (ftToList cs))
+  | otherwise = Just (findCdf x)
   where
-    td = if tdBufferLen td0 == 0 then td0 else compress td0
     cs = tdCentroids td
     n = tdTotalWeight td
     mn = tdMin td
     mx = tdMax td
     numCentroids = mCount (FT.measure cs)
 
-    walkCdf :: Double -> [Centroid] -> Double
-    walkCdf x' centroids = go 0 0 centroids
-      where
-        lastIdx = numCentroids - 1
+    findCdf :: Double -> Double
+    findCdf x' =
+      -- Split at the first centroid with mean >= x'
+      let (left, right) = splitByMean x' cs
+          leftWeight = mWeight (FT.measure left)
+          leftCount = mCount (FT.measure left)
+       in case (FT.viewr left, FT.viewl right) of
+            -- x' is before all centroids
+            (EmptyR, rc :< _) ->
+              cdfAtFirst rc x'
+            -- x' is after all centroids
+            (_, EmptyL) ->
+              case FT.viewr left of
+                lRest :> lc ->
+                  cdfAtLast lc (mWeight (FT.measure lRest)) x'
+                EmptyR -> 1.0
+            -- x' falls between left and right
+            (lRest :> lc, rc :< _) ->
+              let lcCum = mWeight (FT.measure lRest) -- weight before lc
+                  lcIdx = mCount (FT.measure lRest)
+                  rcIdx = leftCount
+               in if x' <= cMean lc
+                    then
+                      -- x' is at or before lc
+                      if lcIdx == 0
+                        then cdfAtFirst lc x'
+                        else
+                          -- Find the predecessor of lc
+                          case FT.viewr lRest of
+                            llRest :> llc ->
+                              let prevCum = mWeight (FT.measure llRest)
+                               in cdfBetween llc (mCount (FT.measure llRest)) prevCum lc lcIdx lcCum x'
+                            EmptyR -> cdfAtFirst lc x'
+                    else
+                      -- x' is between lc and rc
+                      if rcIdx == numCentroids - 1 && x' > cMean rc
+                        then cdfAtLast rc leftWeight x'
+                        else cdfBetween lc lcIdx lcCum rc rcIdx leftWeight x'
 
-        go :: Int -> Double -> [Centroid] -> Double
-        go _ _ [] = 1.0 -- fallback
-        go i cumulative (c : rest)
-          -- First centroid: left boundary
-          | i == 0 && x' < cMean c =
-              let innerW = cWeight c / 2
-                  frac =
-                    if cMean c == mn
-                      then 1.0
-                      else (x' - mn) / (cMean c - mn)
-               in (innerW * frac) / n
-          | i == 0 && x' == cMean c =
-              (cWeight c / 2) / n
-          -- Last centroid: right boundary
-          | i == lastIdx && x' > cMean c =
-              let halfW = cWeight c / 2
-                  rightW = n - cumulative - halfW
-                  frac =
-                    if mx == cMean c
-                      then 0.0
-                      else (x' - cMean c) / (mx - cMean c)
-               in (cumulative + halfW + rightW * frac) / n
-          | i == lastIdx =
-              (cumulative + cWeight c / 2) / n
-          -- Middle: interpolate between centroid midpoints
-          | otherwise =
-              case rest of
-                [] -> (cumulative + cWeight c / 2) / n
-                (nextC : _) ->
-                  let mid = cumulative + cWeight c / 2
-                      nextCumulative = cumulative + cWeight c
-                      nextMid = nextCumulative + cWeight nextC / 2
-                   in if x' < cMean nextC
-                        then
-                          let frac =
-                                if cMean c == cMean nextC
-                                  then 0.5
-                                  else (x' - cMean c) / (cMean nextC - cMean c)
-                           in (mid + frac * (nextMid - mid)) / n
-                        else go (i + 1) (cumulative + cWeight c) rest
+    cdfAtFirst :: Centroid -> Double -> Double
+    cdfAtFirst c x'
+      | x' < cMean c =
+          let innerW = cWeight c / 2
+              frac =
+                if cMean c == mn
+                  then 1.0
+                  else (x' - mn) / (cMean c - mn)
+           in (innerW * frac) / n
+      | otherwise = (cWeight c / 2) / n
+
+    cdfAtLast :: Centroid -> Double -> Double -> Double
+    cdfAtLast c cumBefore x'
+      | x' > cMean c =
+          let halfW = cWeight c / 2
+              rightW = n - cumBefore - halfW
+              frac =
+                if mx == cMean c
+                  then 0.0
+                  else (x' - cMean c) / (mx - cMean c)
+           in (cumBefore + halfW + rightW * frac) / n
+      | otherwise = (cumBefore + cWeight c / 2) / n
+
+    -- Interpolate CDF between two adjacent centroids
+    cdfBetween :: Centroid -> Int -> Double -> Centroid -> Int -> Double -> Double -> Double
+    cdfBetween lc _lcIdx lcCum rc _rcIdx rcCum x'
+      | x' <= cMean lc = (lcCum + cWeight lc / 2) / n
+      | x' >= cMean rc = (rcCum + cWeight rc / 2) / n
+      | otherwise =
+          let lMid = lcCum + cWeight lc / 2
+              rMid = rcCum + cWeight rc / 2
+              frac =
+                if cMean lc == cMean rc
+                  then 0.5
+                  else (x' - cMean lc) / (cMean rc - cMean lc)
+           in (lMid + frac * (rMid - lMid)) / n
 
 -- ---------------------------------------------------------------------------
 -- Merge
@@ -461,12 +586,8 @@ cdf x td0
 
 -- | Merge two t-digests into one.
 --
--- All centroids from the second digest are added as buffered values into
--- the first, then the result is compressed. This is useful for combining
--- digests from distributed workers or parallel computations.
---
--- The resulting digest has the same accuracy guarantees as if all values
--- had been added to a single digest.
+-- Inserts all centroids from the second digest into the first using
+-- O(log n) insertion, then compresses the result with a greedy merge pass.
 --
 -- >>> let td1 = foldl (flip add) empty [1..500]
 -- >>> let td2 = foldl (flip add) empty [501..1000]
@@ -474,8 +595,7 @@ cdf x td0
 -- 1000.0
 merge :: TDigest -> TDigest -> TDigest
 merge td other =
-  let otherTd = if tdBufferLen other == 0 then other else compress other
-      otherCs = ftToList (tdCentroids otherTd)
+  let otherCs = ftToList (tdCentroids other)
       combined = foldl' (\d c -> addWeighted (cMean c) (cWeight c) d) td otherCs
    in compress combined
 
@@ -489,16 +609,11 @@ merge td other =
 totalWeight :: TDigest -> Double
 totalWeight = tdTotalWeight
 
--- | Return the number of centroids after compressing any pending buffer.
+-- | Return the number of centroids.
 --
--- For a digest with delta = 100, this is typically 50--100 centroids
--- regardless of how many values have been added.
---
--- Uses the monoidal measure for O(1) count after compression.
+-- O(1) via the monoidal measure.
 centroidCount :: TDigest -> Int
-centroidCount td =
-  let td' = if tdBufferLen td == 0 then td else compress td
-   in mCount (FT.measure (tdCentroids td'))
+centroidCount = mCount . FT.measure . tdCentroids
 
 -- ---------------------------------------------------------------------------
 -- Utility
@@ -514,11 +629,9 @@ clamp lo hi x
 -- Additional accessors (for TDigestM interop)
 -- ---------------------------------------------------------------------------
 
--- | Return the list of centroids (sorted by mean) after compressing.
+-- | Return the list of centroids (sorted by mean).
 centroidList :: TDigest -> [Centroid]
-centroidList td =
-  let td' = if tdBufferLen td == 0 then td else compress td
-   in ftToList (tdCentroids td')
+centroidList = ftToList . tdCentroids
 
 -- | Return the compression parameter (delta).
 getDelta :: TDigest -> Double
@@ -537,11 +650,9 @@ fromComponents :: [Centroid] -> Double -> Double -> Double -> Double -> TDigest
 fromComponents cs tw mn mx delta =
   TDigest
     { tdCentroids = FT.fromList cs,
-      tdBuffer = [],
-      tdBufferLen = 0,
       tdTotalWeight = tw,
       tdMin = mn,
       tdMax = mx,
       tdDelta = delta,
-      tdBufferCap = ceiling (delta * 5)
+      tdMaxCentroids = ceiling (delta * 3)
     }
