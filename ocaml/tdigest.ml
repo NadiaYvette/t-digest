@@ -1,5 +1,6 @@
 (* Dunning t-digest for online quantile estimation.
-   Merging digest variant with K_1 (arcsine) scale function. *)
+   Merging digest variant with K_1 (arcsine) scale function.
+   Uses a Fenwick tree for O(log n) quantile queries. *)
 
 type centroid = {
   mutable mean : float;
@@ -16,6 +17,8 @@ type t = {
   mutable total_weight : float;
   mutable min_val : float;
   mutable max_val : float;
+  mutable fenwick : float array;
+  mutable fenwick_len : int;
 }
 
 let default_delta = 100.0
@@ -33,7 +36,59 @@ let create ?(delta = default_delta) () =
     total_weight = 0.0;
     min_val = infinity;
     max_val = neg_infinity;
+    fenwick = [||];
+    fenwick_len = 0;
   }
+
+(* Fenwick tree (Binary Indexed Tree) for prefix sums of centroid weights.
+   1-indexed: fenwick.(i) covers indices based on lowest set bit of i. *)
+
+let fenwick_build td =
+  let n = td.centroid_len in
+  if n = 0 then begin
+    td.fenwick <- [||];
+    td.fenwick_len <- 0
+  end else begin
+    let fw = Array.make (n + 1) 0.0 in
+    (* Build via prefix-sum approach: O(n) *)
+    for i = 1 to n do
+      fw.(i) <- fw.(i) +. td.centroids.(i - 1).weight;
+      let j = i + (i land (-i)) in
+      if j <= n then fw.(j) <- fw.(j) +. fw.(i)
+    done;
+    td.fenwick <- fw;
+    td.fenwick_len <- n
+  end
+
+(* Return prefix sum of weights for centroids 0..i-1 (i.e. first i centroids).
+   i is 1-indexed position in the Fenwick tree. *)
+let fenwick_prefix_sum fw i =
+  let s = ref 0.0 in
+  let j = ref i in
+  while !j > 0 do
+    s := !s +. fw.(!j);
+    j := !j - (!j land (- !j))
+  done;
+  !s
+
+(* Find the smallest index i (0-based centroid index) such that
+   prefix_sum(0..i) >= target. Returns the 0-based index.
+   Uses O(log n) tree descent. *)
+let fenwick_find fw n target =
+  let pos = ref 0 in
+  let bit_mask = ref 1 in
+  while !bit_mask <= n do bit_mask := !bit_mask lsl 1 done;
+  bit_mask := !bit_mask lsr 1;
+  let sum = ref 0.0 in
+  while !bit_mask > 0 do
+    let next = !pos + !bit_mask in
+    if next <= n && !sum +. fw.(next) < target then begin
+      pos := next;
+      sum := !sum +. fw.(next)
+    end;
+    bit_mask := !bit_mask lsr 1
+  done;
+  !pos  (* 0-based index of the centroid *)
 
 let k td q =
   (td.delta /. (2.0 *. Float.pi)) *. Float.asin (2.0 *. q -. 1.0)
@@ -75,7 +130,8 @@ let compress td =
         incr new_len
       end
     done;
-    td.centroid_len <- !new_len
+    td.centroid_len <- !new_len;
+    fenwick_build td
   end
 
 let add td value ?(weight = 1.0) () =
@@ -99,49 +155,48 @@ let quantile td q =
     let q = Float.max 0.0 (Float.min 1.0 q) in
     let n = td.total_weight in
     let target = q *. n in
-    let cumulative = ref 0.0 in
-    let result = ref None in
-    let i = ref 0 in
-    while !result = None && !i < td.centroid_len do
-      let c = td.centroids.(!i) in
-      let mid = !cumulative +. c.weight /. 2.0 in
-      (* Left boundary *)
-      if !i = 0 && target < c.weight /. 2.0 then begin
-        if c.weight = 1.0 then
-          result := Some td.min_val
-        else
-          result := Some (td.min_val +. (c.mean -. td.min_val) *. (target /. (c.weight /. 2.0)))
-      end;
-      (* Right boundary *)
-      if !result = None && !i = td.centroid_len - 1 then begin
-        if target > n -. c.weight /. 2.0 then begin
-          if c.weight = 1.0 then
-            result := Some td.max_val
-          else begin
-            let remaining = n -. c.weight /. 2.0 in
-            result := Some (c.mean +. (td.max_val -. c.mean) *. ((target -. remaining) /. (c.weight /. 2.0)))
-          end
-        end else
-          result := Some c.mean
-      end;
-      (* Interpolation between centroids *)
-      if !result = None && !i < td.centroid_len - 1 then begin
-        let next_c = td.centroids.(!i + 1) in
-        let next_mid = !cumulative +. c.weight +. next_c.weight /. 2.0 in
-        if target <= next_mid then begin
-          let frac =
-            if next_mid = mid then 0.5
-            else (target -. mid) /. (next_mid -. mid)
-          in
-          result := Some (c.mean +. frac *. (next_c.mean -. c.mean))
+    let fw = td.fenwick in
+    let flen = td.fenwick_len in
+
+    (* Use Fenwick tree to find the centroid in O(log n).
+       fenwick_find returns 0-based index i such that
+       sum of weights[0..i-1] < target <= sum of weights[0..i].
+       We need cumulative weight *before* centroid i to interpolate. *)
+    let i = fenwick_find fw flen target in
+    let cum_before = if i = 0 then 0.0 else fenwick_prefix_sum fw i in
+    let c = td.centroids.(i) in
+    let mid = cum_before +. c.weight /. 2.0 in
+
+    (* Left boundary *)
+    if i = 0 && target < c.weight /. 2.0 then begin
+      if c.weight = 1.0 then Some td.min_val
+      else Some (td.min_val +. (c.mean -. td.min_val) *. (target /. (c.weight /. 2.0)))
+    end
+    (* Right boundary *)
+    else if i = td.centroid_len - 1 then begin
+      if target > n -. c.weight /. 2.0 then begin
+        if c.weight = 1.0 then Some td.max_val
+        else begin
+          let remaining = n -. c.weight /. 2.0 in
+          Some (c.mean +. (td.max_val -. c.mean) *. ((target -. remaining) /. (c.weight /. 2.0)))
         end
-      end;
-      cumulative := !cumulative +. c.weight;
-      incr i
-    done;
-    match !result with
-    | Some _ -> !result
-    | None -> Some td.max_val
+      end else
+        Some c.mean
+    end
+    (* Interpolation between centroids *)
+    else begin
+      let next_c = td.centroids.(i + 1) in
+      let next_mid = cum_before +. c.weight +. next_c.weight /. 2.0 in
+      if target <= next_mid then begin
+        let frac =
+          if next_mid = mid then 0.5
+          else (target -. mid) /. (next_mid -. mid)
+        in
+        Some (c.mean +. frac *. (next_c.mean -. c.mean))
+      end else
+        (* Rare edge case: advance to next centroid *)
+        Some next_c.mean
+    end
   end
 
 let cdf td x =
@@ -151,47 +206,56 @@ let cdf td x =
   else if x >= td.max_val then Some 1.0
   else begin
     let n = td.total_weight in
-    let cumulative = ref 0.0 in
-    let result = ref None in
-    let i = ref 0 in
-    while !result = None && !i < td.centroid_len do
-      let c = td.centroids.(!i) in
-      if !i = 0 then begin
-        if x < c.mean then begin
-          let inner_w = c.weight /. 2.0 in
-          let frac = if c.mean = td.min_val then 1.0 else (x -. td.min_val) /. (c.mean -. td.min_val) in
-          result := Some ((inner_w *. frac) /. n)
-        end else if x = c.mean then
-          result := Some ((c.weight /. 2.0) /. n)
-      end;
-      if !result = None && !i = td.centroid_len - 1 then begin
-        if x > c.mean then begin
-          let right_w = n -. !cumulative -. c.weight /. 2.0 in
-          let frac = if td.max_val = c.mean then 0.0 else (x -. c.mean) /. (td.max_val -. c.mean) in
-          result := Some ((!cumulative +. c.weight /. 2.0 +. right_w *. frac) /. n)
-        end else
-          result := Some ((!cumulative +. c.weight /. 2.0) /. n)
-      end;
-      if !result = None && !i < td.centroid_len - 1 then begin
-        let _mid = !cumulative +. c.weight /. 2.0 in
-        let next_c = td.centroids.(!i + 1) in
-        let next_cumulative = !cumulative +. c.weight in
-        let next_mid = next_cumulative +. next_c.weight /. 2.0 in
-        if x < next_c.mean then begin
-          if c.mean = next_c.mean then
-            result := Some ((_mid +. (next_mid -. _mid) /. 2.0) /. n)
-          else begin
-            let frac = (x -. c.mean) /. (next_c.mean -. c.mean) in
-            result := Some ((_mid +. frac *. (next_mid -. _mid)) /. n)
-          end
-        end
-      end;
-      cumulative := !cumulative +. c.weight;
-      incr i
+    let len = td.centroid_len in
+    let fw = td.fenwick in
+
+    (* Binary search for the rightmost centroid with mean <= x. O(log n). *)
+    let lo = ref 0 in
+    let hi = ref (len - 1) in
+    let idx = ref (-1) in
+    while !lo <= !hi do
+      let mid_i = !lo + (!hi - !lo) / 2 in
+      if td.centroids.(mid_i).mean <= x then begin
+        idx := mid_i;
+        lo := mid_i + 1
+      end else
+        hi := mid_i - 1
     done;
-    match !result with
-    | Some _ -> !result
-    | None -> Some 1.0
+
+    if !idx = -1 then begin
+      (* x < first centroid mean: interpolate from min_val *)
+      let c = td.centroids.(0) in
+      let inner_w = c.weight /. 2.0 in
+      let frac = if c.mean = td.min_val then 1.0 else (x -. td.min_val) /. (c.mean -. td.min_val) in
+      Some ((inner_w *. frac) /. n)
+    end else begin
+      let i = !idx in
+      let c = td.centroids.(i) in
+      let cum_before = if i = 0 then 0.0 else fenwick_prefix_sum fw i in
+      let cum_mid = cum_before +. c.weight /. 2.0 in
+
+      if i = len - 1 then begin
+        (* Last centroid *)
+        if x > c.mean then begin
+          let right_w = n -. cum_before -. c.weight /. 2.0 in
+          let frac = if td.max_val = c.mean then 0.0 else (x -. c.mean) /. (td.max_val -. c.mean) in
+          Some ((cum_mid +. right_w *. frac) /. n)
+        end else
+          Some (cum_mid /. n)
+      end else begin
+        let next_c = td.centroids.(i + 1) in
+        let next_cum_before = cum_before +. c.weight in
+        let next_mid = next_cum_before +. next_c.weight /. 2.0 in
+        if x = c.mean then
+          Some (cum_mid /. n)
+        else if c.mean = next_c.mean then
+          Some ((cum_mid +. (next_mid -. cum_mid) /. 2.0) /. n)
+        else begin
+          let frac = (x -. c.mean) /. (next_c.mean -. c.mean) in
+          Some ((cum_mid +. frac *. (next_mid -. cum_mid)) /. n)
+        end
+      end
+    end
   end
 
 let merge td other =

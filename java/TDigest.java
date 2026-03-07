@@ -29,6 +29,7 @@ public class TDigest {
     private double min;
     private double max;
     private final int bufferCap;
+    private double[] fenwick; // Fenwick tree (BIT) over centroid weights
 
     public TDigest(double delta) {
         this.delta = delta;
@@ -38,6 +39,7 @@ public class TDigest {
         this.min = Double.POSITIVE_INFINITY;
         this.max = Double.NEGATIVE_INFINITY;
         this.bufferCap = (int) Math.ceil(delta * BUFFER_FACTOR);
+        this.fenwick = new double[0];
     }
 
     public TDigest() {
@@ -89,6 +91,7 @@ public class TDigest {
         }
 
         centroids = newCentroids;
+        fenwickBuild();
     }
 
     public double quantile(double q) {
@@ -101,19 +104,48 @@ public class TDigest {
 
         double n = totalWeight;
         double target = q * n;
-        double cumulative = 0.0;
 
-        for (int i = 0; i < centroids.size(); i++) {
-            Centroid c = centroids.get(i);
+        // Use Fenwick tree to find the centroid index in O(log n)
+        int i = fenwickFind(target);
+        double cumulative = (i > 0) ? fenwickPrefixSum(i - 1) : 0.0;
 
-            if (i == 0) {
-                if (target < c.weight / 2.0) {
-                    if (c.weight == 1) return min;
-                    return min + (c.mean - min) * (target / (c.weight / 2.0));
-                }
+        Centroid c = centroids.get(i);
+
+        if (i == 0) {
+            if (target < c.weight / 2.0) {
+                if (c.weight == 1) return min;
+                return min + (c.mean - min) * (target / (c.weight / 2.0));
             }
+        }
 
-            if (i == centroids.size() - 1) {
+        if (i == centroids.size() - 1) {
+            if (target > n - c.weight / 2.0) {
+                if (c.weight == 1) return max;
+                double remaining = n - c.weight / 2.0;
+                return c.mean + (max - c.mean) * ((target - remaining) / (c.weight / 2.0));
+            }
+            return c.mean;
+        }
+
+        Centroid nextC = centroids.get(i + 1);
+        double mid = cumulative + c.weight / 2.0;
+        double nextMid = cumulative + c.weight + nextC.weight / 2.0;
+
+        if (target <= nextMid) {
+            double frac;
+            if (nextMid == mid) {
+                frac = 0.5;
+            } else {
+                frac = (target - mid) / (nextMid - mid);
+            }
+            return c.mean + frac * (nextC.mean - c.mean);
+        }
+
+        // Fallback: scan forward from i (should rarely happen)
+        cumulative += c.weight;
+        for (int j = i + 1; j < centroids.size(); j++) {
+            c = centroids.get(j);
+            if (j == centroids.size() - 1) {
                 if (target > n - c.weight / 2.0) {
                     if (c.weight == 1) return max;
                     double remaining = n - c.weight / 2.0;
@@ -121,21 +153,15 @@ public class TDigest {
                 }
                 return c.mean;
             }
-
-            Centroid nextC = centroids.get(i + 1);
-            double mid = cumulative + c.weight / 2.0;
-            double nextMid = cumulative + c.weight + nextC.weight / 2.0;
-
+            nextC = centroids.get(j + 1);
+            mid = cumulative + c.weight / 2.0;
+            nextMid = cumulative + c.weight + nextC.weight / 2.0;
             if (target <= nextMid) {
                 double frac;
-                if (nextMid == mid) {
-                    frac = 0.5;
-                } else {
-                    frac = (target - mid) / (nextMid - mid);
-                }
+                if (nextMid == mid) frac = 0.5;
+                else frac = (target - mid) / (nextMid - mid);
                 return c.mean + frac * (nextC.mean - c.mean);
             }
-
             cumulative += c.weight;
         }
 
@@ -149,48 +175,59 @@ public class TDigest {
         if (x >= max) return 1.0;
 
         double n = totalWeight;
-        double cumulative = 0.0;
+        int size = centroids.size();
 
-        for (int i = 0; i < centroids.size(); i++) {
-            Centroid c = centroids.get(i);
-
-            if (i == 0) {
-                if (x < c.mean) {
-                    double innerW = c.weight / 2.0;
-                    double frac = (c.mean == min) ? 1.0 : (x - min) / (c.mean - min);
-                    return (innerW * frac) / n;
-                } else if (x == c.mean) {
-                    return (c.weight / 2.0) / n;
-                }
+        // Binary search for the rightmost centroid with mean <= x
+        int lo = 0, hi = size - 1, pos = -1;
+        while (lo <= hi) {
+            int mid2 = (lo + hi) >>> 1;
+            if (centroids.get(mid2).mean <= x) {
+                pos = mid2;
+                lo = mid2 + 1;
+            } else {
+                hi = mid2 - 1;
             }
-
-            if (i == centroids.size() - 1) {
-                if (x > c.mean) {
-                    double rightW = n - cumulative - c.weight / 2.0;
-                    double frac = (max == c.mean) ? 0.0 : (x - c.mean) / (max - c.mean);
-                    return (cumulative + c.weight / 2.0 + rightW * frac) / n;
-                } else {
-                    return (cumulative + c.weight / 2.0) / n;
-                }
-            }
-
-            double mid = cumulative + c.weight / 2.0;
-            Centroid nextC = centroids.get(i + 1);
-            double nextCumulative = cumulative + c.weight;
-            double nextMid = nextCumulative + nextC.weight / 2.0;
-
-            if (x < nextC.mean) {
-                if (c.mean == nextC.mean) {
-                    return (mid + (nextMid - mid) / 2.0) / n;
-                }
-                double frac = (x - c.mean) / (nextC.mean - c.mean);
-                return (mid + frac * (nextMid - mid)) / n;
-            }
-
-            cumulative += c.weight;
         }
 
-        return 1.0;
+        // x is less than the first centroid mean
+        if (pos < 0) {
+            Centroid c = centroids.get(0);
+            double innerW = c.weight / 2.0;
+            double frac = (c.mean == min) ? 1.0 : (x - min) / (c.mean - min);
+            return (innerW * frac) / n;
+        }
+
+        int i = pos;
+        Centroid c = centroids.get(i);
+        double cumulative = (i > 0) ? fenwickPrefixSum(i - 1) : 0.0;
+
+        if (i == 0) {
+            if (x == c.mean) {
+                return (c.weight / 2.0) / n;
+            }
+            // x > c.mean, handled below
+        }
+
+        if (i == size - 1) {
+            if (x > c.mean) {
+                double rightW = n - cumulative - c.weight / 2.0;
+                double frac = (max == c.mean) ? 0.0 : (x - c.mean) / (max - c.mean);
+                return (cumulative + c.weight / 2.0 + rightW * frac) / n;
+            } else {
+                return (cumulative + c.weight / 2.0) / n;
+            }
+        }
+
+        double mid = cumulative + c.weight / 2.0;
+        Centroid nextC = centroids.get(i + 1);
+        double nextCumulative = cumulative + c.weight;
+        double nextMid = nextCumulative + nextC.weight / 2.0;
+
+        if (c.mean == nextC.mean) {
+            return (mid + (nextMid - mid) / 2.0) / n;
+        }
+        double frac = (x - c.mean) / (nextC.mean - c.mean);
+        return (mid + frac * (nextMid - mid)) / n;
     }
 
     public void merge(TDigest other) {
@@ -215,6 +252,56 @@ public class TDigest {
 
     public double getMax() {
         return max;
+    }
+
+    /** Build the Fenwick tree from the current centroids list. */
+    private void fenwickBuild() {
+        int n = centroids.size();
+        fenwick = new double[n + 1]; // 1-indexed
+        for (int i = 0; i < n; i++) {
+            int j = i + 1; // 1-indexed position
+            fenwick[j] += centroids.get(i).weight;
+            int parent = j + (j & -j);
+            if (parent <= n) {
+                fenwick[parent] += fenwick[j];
+            }
+        }
+    }
+
+    /** Return prefix sum of weights for centroids[0..i] (inclusive, 0-indexed). */
+    private double fenwickPrefixSum(int i) {
+        double sum = 0.0;
+        for (int j = i + 1; j > 0; j -= j & -j) {
+            sum += fenwick[j];
+        }
+        return sum;
+    }
+
+    /**
+     * Find the smallest index i such that the prefix sum of weights[0..i] > target,
+     * using O(log n) Fenwick tree traversal.
+     * This is the centroid whose cumulative weight range contains 'target'.
+     */
+    private int fenwickFind(double target) {
+        int n = centroids.size();
+        int pos = 0;
+        // Find the highest power of 2 <= n
+        int bitMask = Integer.highestOneBit(n);
+        double cumul = 0.0;
+
+        while (bitMask > 0) {
+            int next = pos + bitMask;
+            if (next <= n && cumul + fenwick[next] <= target) {
+                cumul += fenwick[next];
+                pos = next;
+            }
+            bitMask >>= 1;
+        }
+        // pos is now the last index (1-based) whose prefix sum <= target.
+        // The centroid we want is at 0-based index pos (which is pos+1 in 1-based,
+        // but we cap it).
+        if (pos >= n) pos = n - 1;
+        return pos; // 0-indexed
     }
 
     private double k(double q) {

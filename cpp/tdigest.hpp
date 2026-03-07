@@ -40,10 +40,15 @@ private:
 
   std::vector<Centroid> centroids_;
   std::vector<Centroid> buffer_;
+  std::vector<double> fenwick_;
 
   double k(double q) const;
   static void mergeIntoLast(std::vector<Centroid> &centroids,
                             const Centroid &c);
+
+  void fenwick_build();
+  double fenwick_prefix_sum(int i) const;
+  int fenwick_find(double target) const;
 };
 
 #endif /* TDIGEST_HPP */

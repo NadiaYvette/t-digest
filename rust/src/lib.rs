@@ -16,6 +16,9 @@ const DEFAULT_DELTA: f64 = 100.0;
 const BUFFER_FACTOR: usize = 5;
 
 /// A merging t-digest data structure for online quantile estimation.
+///
+/// Uses a Fenwick tree (binary indexed tree) over centroid weights for
+/// O(log n) quantile and CDF queries instead of linear scans.
 #[derive(Clone, Debug)]
 pub struct TDigest {
     delta: f64,
@@ -25,6 +28,8 @@ pub struct TDigest {
     min: f64,
     max: f64,
     buffer_cap: usize,
+    /// Fenwick tree (1-indexed) over centroid weights for O(log n) prefix sums.
+    fenwick: Vec<f64>,
 }
 
 impl TDigest {
@@ -38,6 +43,7 @@ impl TDigest {
             min: f64::INFINITY,
             max: f64::NEG_INFINITY,
             buffer_cap: (delta as usize) * BUFFER_FACTOR,
+            fenwick: Vec::new(),
         }
     }
 
@@ -113,6 +119,64 @@ impl TDigest {
         }
 
         self.centroids = new_centroids;
+        self.fenwick_build();
+    }
+
+    /// Builds the Fenwick tree from the current centroid weights.
+    /// Called at the end of every compress().
+    fn fenwick_build(&mut self) {
+        let n = self.centroids.len();
+        // 1-indexed Fenwick tree of size n+1
+        self.fenwick = vec![0.0; n + 1];
+        for i in 0..n {
+            self.fenwick_update(i, self.centroids[i].weight);
+        }
+    }
+
+    /// Adds `delta` to position `i` (0-indexed) in the Fenwick tree.
+    fn fenwick_update(&mut self, i: usize, delta: f64) {
+        let mut j = i + 1; // 1-indexed
+        while j < self.fenwick.len() {
+            self.fenwick[j] += delta;
+            j += j & j.wrapping_neg(); // j += lowest set bit
+        }
+    }
+
+    /// Returns the prefix sum of weights for centroids 0..=i (0-indexed).
+    fn fenwick_prefix_sum(&self, i: usize) -> f64 {
+        let mut sum = 0.0;
+        let mut j = i + 1; // 1-indexed
+        while j > 0 {
+            sum += self.fenwick[j];
+            j -= j & j.wrapping_neg(); // remove lowest set bit
+        }
+        sum
+    }
+
+    /// Finds the smallest index `i` such that prefix_sum(0..=i) >= target.
+    /// Uses O(log n) tree descent instead of linear scan.
+    fn fenwick_find(&self, target: f64) -> usize {
+        let n = self.centroids.len();
+        if n == 0 {
+            return 0;
+        }
+        // Find the highest power of 2 <= n
+        let mut bit = 1;
+        while bit * 2 <= n {
+            bit *= 2;
+        }
+        let mut pos: usize = 0;
+        let mut remaining = target;
+        while bit > 0 {
+            let next = pos + bit;
+            if next <= n && self.fenwick[next] < remaining {
+                remaining -= self.fenwick[next];
+                pos = next;
+            }
+            bit >>= 1;
+        }
+        // pos is now the 0-indexed result (pos was 0-based position after last step)
+        pos // 0-indexed: prefix_sum(0..=pos) >= target
     }
 
     /// Merges a centroid into the last centroid in the list.
@@ -124,6 +188,8 @@ impl TDigest {
     }
 
     /// Returns the estimated value at quantile q (0 <= q <= 1).
+    ///
+    /// Uses the Fenwick tree for O(log n) centroid lookup.
     pub fn quantile(&mut self, q: f64) -> Option<f64> {
         if !self.buffer.is_empty() {
             self.compress();
@@ -138,53 +204,83 @@ impl TDigest {
         let q = q.clamp(0.0, 1.0);
         let n = self.total_weight;
         let target = q * n;
-        let mut cumulative: f64 = 0.0;
         let count = self.centroids.len();
 
-        for i in 0..count {
-            let c_mean = self.centroids[i].mean;
-            let c_weight = self.centroids[i].weight;
-
-            if i == 0 && target < c_weight / 2.0 {
-                if c_weight == 1.0 {
-                    return Some(self.min);
-                }
-                return Some(self.min + (c_mean - self.min) * (target / (c_weight / 2.0)));
+        // Handle first centroid boundary
+        let first_w = self.centroids[0].weight;
+        if target < first_w / 2.0 {
+            if first_w == 1.0 {
+                return Some(self.min);
             }
-
-            if i == count - 1 {
-                if target > n - c_weight / 2.0 {
-                    if c_weight == 1.0 {
-                        return Some(self.max);
-                    }
-                    let remaining = n - c_weight / 2.0;
-                    return Some(
-                        c_mean + (self.max - c_mean) * ((target - remaining) / (c_weight / 2.0)),
-                    );
-                }
-                return Some(c_mean);
-            }
-
-            let mid = cumulative + c_weight / 2.0;
-            let next_c = &self.centroids[i + 1];
-            let next_mid = cumulative + c_weight + next_c.weight / 2.0;
-
-            if target <= next_mid {
-                let frac = if next_mid == mid {
-                    0.5
-                } else {
-                    (target - mid) / (next_mid - mid)
-                };
-                return Some(c_mean + frac * (next_c.mean - c_mean));
-            }
-
-            cumulative += c_weight;
+            return Some(
+                self.min + (self.centroids[0].mean - self.min) * (target / (first_w / 2.0)),
+            );
         }
 
-        Some(self.max)
+        // Handle last centroid boundary
+        let last_w = self.centroids[count - 1].weight;
+        if target > n - last_w / 2.0 {
+            if last_w == 1.0 {
+                return Some(self.max);
+            }
+            let remaining = n - last_w / 2.0;
+            return Some(
+                self.centroids[count - 1].mean
+                    + (self.max - self.centroids[count - 1].mean)
+                        * ((target - remaining) / (last_w / 2.0)),
+            );
+        }
+
+        // Use Fenwick tree to find the centroid whose cumulative weight
+        // neighborhood contains the target. We want the centroid i such that
+        // mid_i <= target <= mid_{i+1}, where mid_i = cumulative(0..i) + w_i/2.
+        //
+        // fenwick_find(target) gives the smallest index whose prefix sum >= target.
+        // We need the index where the midpoint bracket contains target.
+        let i = self.fenwick_find(target);
+        // Clamp to valid range for interpolation (need i and i+1)
+        let i = if i >= count - 1 { count - 2 } else { i };
+
+        let cumulative = if i == 0 {
+            0.0
+        } else {
+            self.fenwick_prefix_sum(i - 1)
+        };
+        let c_weight = self.centroids[i].weight;
+        let c_mean = self.centroids[i].mean;
+        let mid = cumulative + c_weight / 2.0;
+        let next_c = &self.centroids[i + 1];
+        let next_mid = cumulative + c_weight + next_c.weight / 2.0;
+
+        if target <= mid && i > 0 {
+            // Target is before mid_i; go back one centroid
+            let prev_cumulative = if i <= 1 {
+                0.0
+            } else {
+                self.fenwick_prefix_sum(i - 2)
+            };
+            let prev = &self.centroids[i - 1];
+            let prev_mid = prev_cumulative + prev.weight / 2.0;
+            let frac = if mid == prev_mid {
+                0.5
+            } else {
+                (target - prev_mid) / (mid - prev_mid)
+            };
+            return Some(prev.mean + frac * (c_mean - prev.mean));
+        }
+
+        let frac = if next_mid == mid {
+            0.5
+        } else {
+            (target - mid) / (next_mid - mid)
+        };
+        Some(c_mean + frac * (next_c.mean - c_mean))
     }
 
     /// Returns the estimated CDF value (proportion <= x).
+    ///
+    /// Uses binary search on centroid means and the Fenwick tree for O(log n)
+    /// cumulative weight lookups.
     pub fn cdf(&mut self, x: f64) -> Option<f64> {
         if !self.buffer.is_empty() {
             self.compress();
@@ -200,58 +296,62 @@ impl TDigest {
         }
 
         let n = self.total_weight;
-        let mut cumulative: f64 = 0.0;
         let count = self.centroids.len();
 
-        for i in 0..count {
-            let c_mean = self.centroids[i].mean;
-            let c_weight = self.centroids[i].weight;
+        // Binary search: find the rightmost centroid with mean <= x.
+        // partition_point returns the first index where mean > x.
+        let pos = self.centroids.partition_point(|c| c.mean <= x);
 
-            if i == 0 {
-                if x < c_mean {
-                    let inner_w = c_weight / 2.0;
-                    let frac = if c_mean == self.min {
-                        1.0
-                    } else {
-                        (x - self.min) / (c_mean - self.min)
-                    };
-                    return Some((inner_w * frac) / n);
-                } else if x == c_mean {
-                    return Some((c_weight / 2.0) / n);
-                }
-            }
-
-            if i == count - 1 {
-                if x > c_mean {
-                    let right_w = n - cumulative - c_weight / 2.0;
-                    let frac = if self.max == c_mean {
-                        0.0
-                    } else {
-                        (x - c_mean) / (self.max - c_mean)
-                    };
-                    return Some((cumulative + c_weight / 2.0 + right_w * frac) / n);
-                }
-                return Some((cumulative + c_weight / 2.0) / n);
-            }
-
-            let mid = cumulative + c_weight / 2.0;
-            let next_c_mean = self.centroids[i + 1].mean;
-            let next_c_weight = self.centroids[i + 1].weight;
-            let next_cumulative = cumulative + c_weight;
-            let next_mid = next_cumulative + next_c_weight / 2.0;
-
-            if x < next_c_mean {
-                if c_mean == next_c_mean {
-                    return Some((mid + (next_mid - mid) / 2.0) / n);
-                }
-                let frac = (x - c_mean) / (next_c_mean - c_mean);
-                return Some((mid + frac * (next_mid - mid)) / n);
-            }
-
-            cumulative += c_weight;
+        // x is less than the first centroid's mean
+        if pos == 0 {
+            let c_weight = self.centroids[0].weight;
+            let c_mean = self.centroids[0].mean;
+            let inner_w = c_weight / 2.0;
+            let frac = if c_mean == self.min {
+                1.0
+            } else {
+                (x - self.min) / (c_mean - self.min)
+            };
+            return Some((inner_w * frac) / n);
         }
 
-        Some(1.0)
+        // i is the last centroid with mean <= x
+        let i = pos - 1;
+        let c_mean = self.centroids[i].mean;
+        let c_weight = self.centroids[i].weight;
+        let cumulative = if i == 0 {
+            0.0
+        } else {
+            self.fenwick_prefix_sum(i - 1)
+        };
+
+        // x is beyond the last centroid's mean
+        if i == count - 1 {
+            let right_w = n - cumulative - c_weight / 2.0;
+            let frac = if self.max == c_mean {
+                0.0
+            } else {
+                (x - c_mean) / (self.max - c_mean)
+            };
+            return Some((cumulative + c_weight / 2.0 + right_w * frac) / n);
+        }
+
+        // x equals c_mean exactly (or is between c_mean and next centroid mean)
+        let mid = cumulative + c_weight / 2.0;
+        let next_c_mean = self.centroids[i + 1].mean;
+        let next_c_weight = self.centroids[i + 1].weight;
+        let next_cumulative = cumulative + c_weight;
+        let next_mid = next_cumulative + next_c_weight / 2.0;
+
+        if x == c_mean && (i + 1 >= count || x < next_c_mean) {
+            return Some(mid / n);
+        }
+
+        if c_mean == next_c_mean {
+            return Some((mid + (next_mid - mid) / 2.0) / n);
+        }
+        let frac = (x - c_mean) / (next_c_mean - c_mean);
+        Some((mid + frac * (next_mid - mid)) / n)
     }
 
     /// Merges another TDigest into this one.
