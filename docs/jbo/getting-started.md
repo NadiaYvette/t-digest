@@ -17,24 +17,37 @@ cd t-digest
 
 ### Haskell
 
-do nitcu la `ghc` (le Haskell zbasu samtci).
+**sarcu:** GHC, `fingertree` joi `vector` le samtci
+
+**sezu'e (no zbasu tutci):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-le mudul poi `TDigest` cu pilno lo `base` ciste .i na nitcu la Cabal ja la Stack.
+**tai le Cabal samtci (`dunning-t-digest`):**
 
-**lo nu pilno fi le do ke fonxa:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+le Cabal samtci cu jarco re girzu samtci:
+`Data.Sketch.TDigest` (junri, finger-tree-se jicmu) joi
+`Data.Sketch.TDigest.Mutable` (galfi kakne, ST monad joi vektori).
+
+**lo do ke kadno pilno:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

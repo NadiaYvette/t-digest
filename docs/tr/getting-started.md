@@ -7,24 +7,37 @@ Diller arası bağımlılık yoktur.
 
 ## Haskell
 
-**Gereksinimler:** GHC (Glasgow Haskell Compiler)
+**On kosullar:** GHC, `fingertree` ve `vector` paketleri
+
+**Bagimsiz (derleme araci olmadan):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-`TDigest` modülü yalnızca `base` kütüphanelerini kullanır (Cabal veya Stack projesi gerekmez).
+**Cabal paketi olarak (`dunning-t-digest`):**
 
-**Kendi kodunuzda kullanım:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal paketi iki kutuphane modulu sunar:
+`Data.Sketch.TDigest` (saf, finger tree tabanli) ve
+`Data.Sketch.TDigest.Mutable` (degistirilebilir, vektorlerle ST monad).
+
+**Kendi kodunuzda kullanma:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

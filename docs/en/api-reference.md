@@ -42,12 +42,20 @@ depending on the language.
 
 ## Haskell
 
-**File:** `haskell/TDigest.hs`
+**Files:** `haskell/TDigest.hs` (pure), `haskell/TDigestM.hs` (mutable)
+**Cabal package:** `dunning-t-digest` — modules `Data.Sketch.TDigest` and `Data.Sketch.TDigest.Mutable`
 
-The Haskell implementation is purely functional. Every operation returns
-a new `TDigest` value; nothing is mutated.
+The Haskell implementation provides two variants:
 
-### Types
+- **Pure** (`Data.Sketch.TDigest` / `TDigest.hs`): Every operation returns a new
+  `TDigest` value; nothing is mutated. Centroids are stored in a finger tree
+  with a four-component monoidal measure, giving O(log n) insertion and
+  O(δ log n) compression.
+- **Mutable** (`Data.Sketch.TDigest.Mutable` / `TDigestM.hs`): Operates in the
+  `ST` monad with mutable vectors. Uses buffer-and-flush with amortised O(1)
+  insertion. Interoperates with the pure variant via `freeze`/`thaw`.
+
+### Types (Pure)
 
 ```haskell
 data Centroid = Centroid
@@ -55,11 +63,10 @@ data Centroid = Centroid
   , cWeight :: !Double
   }
 
-data TDigest  -- opaque; fields are tdCentroids, tdBuffer, tdTotalWeight,
-              -- tdMin, tdMax, tdDelta, tdBufferCap
+data TDigest  -- opaque; backed by a FingerTree with monoidal measure
 ```
 
-### Functions
+### Functions (Pure)
 
 ```haskell
 empty :: TDigest
@@ -74,29 +81,31 @@ Create an empty t-digest with a given compression parameter.
 ```haskell
 add :: Double -> TDigest -> TDigest
 ```
-Add a single value (weight 1) to the digest.
+Add a single value (weight 1) to the digest. O(log n).
 
 ```haskell
 addWeighted :: Double -> Double -> TDigest -> TDigest
 ```
-Add a value with a given weight. Triggers compression when the buffer
-reaches capacity.
+Add a value with a given weight. O(log n). Triggers compression when
+the centroid count exceeds 3δ.
 
 ```haskell
 compress :: TDigest -> TDigest
 ```
-Force compression of the buffer into the centroid list.
+Compress the digest by merging centroids within each K₁ unit interval.
+O(δ log n).
 
 ```haskell
 quantile :: Double -> TDigest -> Maybe Double
 ```
-Estimate the value at quantile q (0 <= q <= 1). Returns `Nothing` if
-the digest is empty.
+Estimate the value at quantile q (0 ≤ q ≤ 1). O(log n).
+Returns `Nothing` if the digest is empty.
 
 ```haskell
 cdf :: Double -> TDigest -> Maybe Double
 ```
-Estimate the CDF at value x. Returns `Nothing` if the digest is empty.
+Estimate the CDF at value x. O(log n).
+Returns `Nothing` if the digest is empty.
 
 ```haskell
 merge :: TDigest -> TDigest -> TDigest
@@ -107,12 +116,28 @@ first and compressed.
 ```haskell
 totalWeight :: TDigest -> Double
 ```
-Total weight of all values added.
+Total weight of all values added. O(1).
 
 ```haskell
 centroidCount :: TDigest -> Int
 ```
-Number of centroids after compressing any pending buffer.
+Number of centroids. O(1) via monoidal measure.
+
+### Functions (Mutable — `Data.Sketch.TDigest.Mutable`)
+
+```haskell
+new :: ST s (MDigest s)
+newWith :: Double -> ST s (MDigest s)
+add :: Double -> MDigest s -> ST s ()
+addWeighted :: Double -> Double -> MDigest s -> ST s ()
+compress :: MDigest s -> ST s ()
+quantile :: Double -> MDigest s -> ST s (Maybe Double)
+cdf :: Double -> MDigest s -> ST s (Maybe Double)
+merge :: TDigest -> MDigest s -> ST s ()
+freeze :: MDigest s -> ST s TDigest
+thaw :: TDigest -> ST s (MDigest s)
+runTDigest :: (forall s. ST s a) -> a
+```
 
 ---
 

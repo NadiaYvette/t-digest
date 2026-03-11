@@ -15,24 +15,37 @@ cd t-digest
 
 ### Haskell
 
-**المتطلبات:** GHC (Glasgow Haskell Compiler)
+**المتطلبات:** GHC، حزمتا `fingertree` و`vector`
+
+**بدون أداة بناء (مستقل):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-الوحدة `TDigest` تستخدم فقط مكتبات `base` (لا حاجة لمشروع Cabal أو Stack).
+**كحزمة Cabal (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+تكشف حزمة Cabal عن وحدتي مكتبة:
+`Data.Sketch.TDigest` (صافية، مدعومة بشجرة الأصابع) و
+`Data.Sketch.TDigest.Mutable` (قابلة للتعديل، ST monad مع متجهات).
 
 **الاستخدام في شفرتك الخاصة:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

@@ -7,24 +7,37 @@
 
 ## Haskell
 
-**前提条件:** GHC（Glasgow Haskell Compiler）
+**前提条件:** GHC、`fingertree` 和 `vector` 包
+
+**独立运行（无需构建工具）:**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-`TDigest` 模块仅使用 `base` 库（不需要 Cabal 或 Stack 项目）。
+**作为 Cabal 包 (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal 包提供两个库模块:
+`Data.Sketch.TDigest`（纯函数式，基于指树）和
+`Data.Sketch.TDigest.Mutable`（可变，使用向量的 ST 单子）。
 
 **在自己的代码中使用:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

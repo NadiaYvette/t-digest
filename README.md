@@ -31,7 +31,7 @@ in Dunning & Ertl (2019).
 | Erlang        | `erlang/`      | `tdigest.erl`                        | Functional/records  |
 | Fortran       | `fortran/`     | `tdigest.f90`                        | Embedded 2-3-4 tree |
 | Go            | `go/`          | `tdigest.go`, `tree234.go`           | Generic 2-3-4 tree  |
-| Haskell       | `haskell/`     | `TDigest.hs`                         | Finger tree         |
+| Haskell       | `haskell/`     | `TDigest.hs`, `TDigestM.hs` (`dunning-t-digest` on Hackage) | Finger tree + mutable ST vectors |
 | Java          | `java/`        | `TDigest.java`, `Tree234.java`       | Generic 2-3-4 tree  |
 | Julia         | `julia/`       | `TDigest.jl`, `Tree234.jl`           | Parametric 2-3-4 tree|
 | Kotlin        | `kotlin/`      | `TDigest.kt`, `Tree234.kt`           | Generic 2-3-4 tree  |
@@ -76,8 +76,10 @@ cd python/ && python3 demo.py
 # Ruby
 cd ruby/ && ruby tdigest.rb
 
-# Haskell
+# Haskell (standalone)
 cd haskell/ && ghc -O2 -o demo Main.hs && ./demo
+# Haskell (cabal)
+cd haskell/ && cabal run dunning-t-digest-demo
 
 # Ada
 cd ada/ && gnatmake -O2 demo.adb -o demo && ./demo

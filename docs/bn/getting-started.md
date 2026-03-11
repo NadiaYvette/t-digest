@@ -12,12 +12,38 @@ cd t-digest
 
 ## Haskell
 
-Haskell বাস্তবায়ন GHC সংকলক ব্যবহার করে। পরিমার্জন সক্রিয় করে সংকলন করুন:
+**পূর্বশর্ত:** GHC, `fingertree` ও `vector` প্যাকেজ
+
+**স্বতন্ত্র (কোনো বিল্ড টুল ছাড়া):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
+```
+
+**Cabal প্যাকেজ হিসেবে (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal প্যাকেজ দুটি লাইব্রেরি মডিউল প্রকাশ করে:
+`Data.Sketch.TDigest` (বিশুদ্ধ, ফিঙ্গার-ট্রি-ভিত্তিক) এবং
+`Data.Sketch.TDigest.Mutable` (পরিবর্তনযোগ্য, ভেক্টরসহ ST মোনাড)।
+
+**নিজের কোডে ব্যবহার:**
+
+```haskell
+import Data.Sketch.TDigest
+
+main :: IO ()
+main = do
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
 ```
 
 ## Ruby

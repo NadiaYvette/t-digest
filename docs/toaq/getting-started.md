@@ -17,24 +17,37 @@ cd t-digest
 
 ### Haskell
 
-Dûe jí `ghc` (báq Haskell chuq lıq).
+**Hieq:** GHC, `fingertree` ruq `vector` toacuaq
+
+**Gijeq (toacuaq chuo buo):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Báq modul `TDigest` nä chuq báq `base` lıq taso. Dûe aq jí Cabal hóe Stack.
+**Cabal toacuaq buq (`dunning-t-digest`):**
 
-**Chuq jáq sho báq fonxa suaq:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal toacuaq ci toacuaq moq ruo juoq:
+`Data.Sketch.TDigest` (ruqshao, finger-tree-huoq) ruq
+`Data.Sketch.TDigest.Mutable` (biejuoq, ST monad ruq vector).
+
+**Suq toacuaq deo buq:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

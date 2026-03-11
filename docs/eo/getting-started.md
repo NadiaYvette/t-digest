@@ -6,24 +6,37 @@
 
 ### Haskell
 
-**Antaŭkondiĉoj:** GHC (Glasgow Haskell Compiler)
+**Antaukondicoj:** GHC, pakoj `fingertree` kaj `vector`
+
+**Memstara (sen konstruilo):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-La modulo `TDigest` uzas nur `base`-bibliotekojn (neniu Cabal- aŭ Stack-projekto necesas).
+**Kiel Cabal-pako (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+La Cabal-pako elmontras du bibliotekajn modulojn:
+`Data.Sketch.TDigest` (pura, fingro-arbo-bazita) kaj
+`Data.Sketch.TDigest.Mutable` (sxangxebla, ST-monado kun vektoroj).
 
 **Uzado en via propra kodo:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

@@ -7,24 +7,37 @@
 
 ## Haskell
 
-**Необходимо:** GHC (Glasgow Haskell Compiler)
+**Необходимые компоненты:** GHC, пакеты `fingertree` и `vector`
+
+**Автономно (без инструмента сборки):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Модуль `TDigest` использует только библиотеки `base` (проект Cabal или Stack не требуется).
+**Как пакет Cabal (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Пакет Cabal предоставляет два библиотечных модуля:
+`Data.Sketch.TDigest` (чистый, на основе finger tree) и
+`Data.Sketch.TDigest.Mutable` (изменяемый, ST-монада с векторами).
 
 **Использование в собственном коде:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

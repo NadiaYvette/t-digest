@@ -6,24 +6,37 @@ Este projeto contem implementacoes do t-digest em 28 linguagens de programacao. 
 
 ### Haskell
 
-**Pre-requisitos:** GHC (Glasgow Haskell Compiler)
+**Pre-requisitos:** GHC, pacotes `fingertree` e `vector`
+
+**Autonomo (sem ferramenta de build):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-O modulo `TDigest` utiliza apenas bibliotecas `base` (nenhum projeto Cabal ou Stack e necessario).
+**Como pacote Cabal (`dunning-t-digest`):**
 
-**Utilizacao no seu proprio codigo:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+O pacote Cabal expoe dois modulos de biblioteca:
+`Data.Sketch.TDigest` (puro, baseado em finger tree) e
+`Data.Sketch.TDigest.Mutable` (mutavel, monada ST com vetores).
+
+**Uso no proprio codigo:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

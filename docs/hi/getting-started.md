@@ -12,12 +12,38 @@ cd t-digest
 
 ## Haskell
 
-Haskell कार्यान्वयन GHC संकलक का उपयोग करता है। अनुकूलन सक्षम करके संकलित करें:
+**पूर्वापेक्षाएँ:** GHC, `fingertree` और `vector` पैकेज
+
+**स्वतंत्र (बिना बिल्ड टूल के):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
+```
+
+**Cabal पैकेज के रूप में (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal पैकेज दो लाइब्रेरी मॉड्यूल प्रदान करता है:
+`Data.Sketch.TDigest` (शुद्ध, फिंगर-ट्री-आधारित) और
+`Data.Sketch.TDigest.Mutable` (परिवर्तनशील, वेक्टर के साथ ST मोनैड)।
+
+**अपने कोड में उपयोग:**
+
+```haskell
+import Data.Sketch.TDigest
+
+main :: IO ()
+main = do
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
 ```
 
 ## Ruby

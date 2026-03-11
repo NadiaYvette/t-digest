@@ -17,24 +17,37 @@ cd t-digest
 
 ### Haskell
 
-sina wile e ilo `ghc` (ilo pali pi toki Haskell).
+**wile:** GHC, poki `fingertree` en poki `vector`
+
+**taso (ilo pali ala):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-ilo `TDigest` li kepeken ilo `base` taso. sina wile ala e Cabal anu Stack.
+**poki Cabal la (`dunning-t-digest`):**
 
-**kepeken lon lipu sina:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+poki Cabal li pana e kulupu tu:
+`Data.Sketch.TDigest` (pona, kama tan kasi luka) en
+`Data.Sketch.TDigest.Mutable` (ken ante, ST monad kepeken ilo sike).
+
+**kepeken lon toki sina:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

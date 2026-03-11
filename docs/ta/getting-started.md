@@ -12,12 +12,38 @@ cd t-digest
 
 ## Haskell
 
-Haskell செயலாக்கம் GHC தொகுப்பியைப் பயன்படுத்துகிறது. மேம்படுத்தலுடன் தொகுக்கவும்:
+**முன்நிபந்தனைகள்:** GHC, `fingertree` மற்றும் `vector` தொகுப்புகள்
+
+**தனிநிலை (கட்டமைப்பு கருவி இல்லாமல்):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
+```
+
+**Cabal தொகுப்பாக (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal தொகுப்பு இரண்டு நூலக தொகுதிகளை வெளிப்படுத்துகிறது:
+`Data.Sketch.TDigest` (தூய, விரல்-மர-அடிப்படையிலான) மற்றும்
+`Data.Sketch.TDigest.Mutable` (மாற்றக்கூடிய, திசையன்களுடன் ST மொனாட்).
+
+**சொந்த குறியீட்டில் பயன்படுத்துதல்:**
+
+```haskell
+import Data.Sketch.TDigest
+
+main :: IO ()
+main = do
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
 ```
 
 ## Ruby

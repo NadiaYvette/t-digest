@@ -7,24 +7,37 @@
 
 ## Haskell
 
-**전제 조건:** GHC (Glasgow Haskell Compiler)
+**전제 조건:** GHC, `fingertree` 및 `vector` 패키지
+
+**독립 실행 (빌드 도구 없이):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-`TDigest` 모듈은 `base` 라이브러리만 사용합니다 (Cabal이나 Stack 프로젝트가 필요하지 않습니다).
+**Cabal 패키지로 (`dunning-t-digest`):**
 
-**자체 코드에서 사용:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal 패키지는 두 개의 라이브러리 모듈을 제공합니다:
+`Data.Sketch.TDigest` (순수, 핑거 트리 기반) 및
+`Data.Sketch.TDigest.Mutable` (변경 가능, 벡터를 사용한 ST 모나드).
+
+**자신의 코드에서 사용:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

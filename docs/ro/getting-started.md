@@ -7,24 +7,37 @@ Nu există dependențe între limbaje.
 
 ## Haskell
 
-**Cerințe:** GHC (Glasgow Haskell Compiler)
+**Cerinte preliminare:** GHC, pachetele `fingertree` si `vector`
+
+**Independent (fara instrument de constructie):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Modulul `TDigest` folosește doar bibliotecile `base` (nu este necesar un proiect Cabal sau Stack).
+**Ca pachet Cabal (`dunning-t-digest`):**
 
-**Utilizare în propriul cod:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Pachetul Cabal expune doua module de biblioteca:
+`Data.Sketch.TDigest` (pur, bazat pe finger tree) si
+`Data.Sketch.TDigest.Mutable` (mutabil, monada ST cu vectori).
+
+**Utilizare in propriul cod:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

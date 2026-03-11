@@ -12,12 +12,38 @@ cd t-digest
 
 ## Haskell
 
-Haskell అమలు GHC కంపైలర్ ఉపయోగిస్తుంది. శ్రేష్ఠీకరణతో కంపైల్ చేయండి:
+**ముందస్తు అవసరాలు:** GHC, `fingertree` మరియు `vector` ప్యాకేజీలు
+
+**స్వతంత్రంగా (బిల్డ్ టూల్ లేకుండా):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
+```
+
+**Cabal ప్యాకేజీగా (`dunning-t-digest`):**
+
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal ప్యాకేజీ రెండు లైబ్రరీ మాడ్యూల్‌లను బహిర్గతం చేస్తుంది:
+`Data.Sketch.TDigest` (స్వచ్ఛమైన, ఫింగర్-ట్రీ-ఆధారిత) మరియు
+`Data.Sketch.TDigest.Mutable` (మార్పు చేయగల, వెక్టార్‌లతో ST మొనాడ్).
+
+**మీ స్వంత కోడ్‌లో ఉపయోగించడం:**
+
+```haskell
+import Data.Sketch.TDigest
+
+main :: IO ()
+main = do
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
+  print (quantile 0.99 td)
 ```
 
 ## Ruby

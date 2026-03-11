@@ -13,24 +13,37 @@ cd t-digest
 
 ### Haskell
 
-**Prasyarat:** GHC (Glasgow Haskell Compiler)
+**Prasyarat:** GHC, paket `fingertree` lan `vector`
+
+**Mandiri (tanpa alat bangun):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Modul `TDigest` mung nggunakake pustaka `base` (ora perlu proyek Cabal utawa Stack).
+**Minangka paket Cabal (`dunning-t-digest`):**
 
-**Panganggo ing kode sampeyan dhewe:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Paket Cabal mbukak rong modul pustaka:
+`Data.Sketch.TDigest` (murni, berbasis finger tree) lan
+`Data.Sketch.TDigest.Mutable` (bisa diowahi, ST monad karo vektor).
+
+**Panggunaan ing kode dhewe:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

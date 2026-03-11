@@ -7,24 +7,37 @@
 
 ## Haskell
 
-**สิ่งที่ต้องมี:** GHC (Glasgow Haskell Compiler)
+**ข้อกำหนดเบื้องต้น:** GHC, แพ็กเกจ `fingertree` และ `vector`
+
+**แบบสแตนด์อโลน (ไม่ใช้เครื่องมือบิลด์):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-โมดูล `TDigest` ใช้เฉพาะไลบรารี `base` เท่านั้น (ไม่ต้องการโปรเจกต์ Cabal หรือ Stack)
+**เป็นแพ็กเกจ Cabal (`dunning-t-digest`):**
 
-**การใช้งานในโค้ดของคุณ:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+แพ็กเกจ Cabal เปิดเผยโมดูลไลบรารีสองตัว:
+`Data.Sketch.TDigest` (บริสุทธิ์, ใช้ finger tree) และ
+`Data.Sketch.TDigest.Mutable` (เปลี่ยนแปลงได้, ST monad กับเวกเตอร์)
+
+**การใช้ในโค้ดของคุณเอง:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

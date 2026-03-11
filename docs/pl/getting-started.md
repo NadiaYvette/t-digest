@@ -7,24 +7,37 @@ Nie ma zależności między językami.
 
 ## Haskell
 
-**Wymagania:** GHC (Glasgow Haskell Compiler)
+**Wymagania wstepne:** GHC, pakiety `fingertree` i `vector`
+
+**Samodzielnie (bez narzedzia budowania):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Moduł `TDigest` używa wyłącznie bibliotek `base` (nie jest wymagany projekt Cabal ani Stack).
+**Jako pakiet Cabal (`dunning-t-digest`):**
 
-**Użycie we własnym kodzie:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Pakiet Cabal udostepnia dwa moduly biblioteczne:
+`Data.Sketch.TDigest` (czysty, oparty na finger tree) i
+`Data.Sketch.TDigest.Mutable` (mutowalny, monada ST z wektorami).
+
+**Uzycie we wlasnym kodzie:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

@@ -7,6 +7,7 @@ haskell/demo
 haskell/bench
 haskell/*.hi
 haskell/*.o
+haskell/dist-newstyle/
 sml/demo
 sml/bench
 mercury/demo

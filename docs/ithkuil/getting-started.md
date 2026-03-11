@@ -17,24 +17,37 @@ cd t-digest
 
 ### Haskell
 
-Ünthëi wial `ghc` (wial Haskell elčëi-ilkëi).
+**Akalui'okh:** GHC, `fingertree` oth `vector` eqalovoi'okh
+
+**Authaloi (oth'eseli build eqwai'okh):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Wial modul `TDigest` äxt'ala elčëi wial `base` ciste taso. Ünthëi aq Cabal êm Stack.
+**Cabal eqalovoi (`dunning-t-digest`) ekh:**
 
-**Elčëi jáq sho wial fonxa suaq:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Cabal eqalovoi adokkhai library eqalovoi'okh:
+`Data.Sketch.TDigest` (athrai, finger-tree-okhrai) oth
+`Data.Sketch.TDigest.Mutable` (mutable, ST monad oth vector'okh).
+
+**Oth'ara kodovel'ekh uzhai:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 

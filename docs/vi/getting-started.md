@@ -7,24 +7,37 @@ Không có sự phụ thuộc chéo giữa các ngôn ngữ.
 
 ## Haskell
 
-**Điều kiện tiên quyết:** GHC (Glasgow Haskell Compiler)
+**Dieu kien tien quyet:** GHC, cac goi `fingertree` va `vector`
+
+**Doc lap (khong can cong cu build):**
 
 ```bash
 cd haskell/
+cabal install --lib fingertree vector  # one-time setup
 ghc -O2 -o demo Main.hs TDigest.hs
 ./demo
 ```
 
-Module `TDigest` chỉ sử dụng thư viện `base` (không cần dự án Cabal hay Stack).
+**Nhu goi Cabal (`dunning-t-digest`):**
 
-**Sử dụng trong mã nguồn của bạn:**
+```bash
+cd haskell/
+cabal build all
+cabal run dunning-t-digest-demo
+```
+
+Goi Cabal cung cap hai module thu vien:
+`Data.Sketch.TDigest` (thuan tuy, dua tren finger tree) va
+`Data.Sketch.TDigest.Mutable` (co the thay doi, ST monad voi vector).
+
+**Su dung trong ma nguon cua ban:**
 
 ```haskell
-import TDigest
+import Data.Sketch.TDigest
 
 main :: IO ()
 main = do
-  let td = foldl (flip add) empty [1.0 .. 10000.0]
+  let td = foldl' (flip add) empty [1.0 .. 10000.0]
   print (quantile 0.99 td)
 ```
 
