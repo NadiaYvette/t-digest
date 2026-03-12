@@ -28,7 +28,9 @@ maintainer:      nadia.yvette.chambers@gmail.com
 copyright:       (c) 2025 Nadia Yvette Chambers
 category:        Data, Statistics
 build-type:      Simple
-extra-doc-files: CHANGELOG.md
+extra-doc-files:
+  CHANGELOG.md
+  README.md
 tested-with:     GHC == 9.14.1
 
 source-repository head

@@ -1,0 +1,195 @@
+# dunning-t-digest
+
+**Streaming quantile estimation with bounded space and high tail accuracy.**
+
+When you have millions of latency measurements, sensor readings, or
+financial tick data flowing through a pipeline, you often need to answer
+questions like *"what was the 99th-percentile response time?"* without
+storing every observation.  The *t-digest* is a compact sketch data
+structure that answers such questions in bounded memory, with accuracy
+that is highest precisely where it matters most — in the extreme tails of
+the distribution.
+
+This package provides two Haskell implementations of the *merging
+t-digest* with the K₁ (arcsine) scale function, as described by
+[Dunning (2021)](https://doi.org/10.1016/j.simpa.2020.100049) and
+[Dunning & Ertl (2019)](https://arxiv.org/abs/1902.04023):
+
+- **`Data.Sketch.TDigest`** — a purely functional implementation backed
+  by a finger tree with a four-component monoidal measure, providing
+  O(log n) insertion, query, and merge operations with no mutable state.
+
+- **`Data.Sketch.TDigest.Mutable`** — a mutable implementation in the
+  `ST` monad using buffer-and-flush with greedy merge over mutable
+  vectors, providing O(1) amortised insertion for high-throughput
+  ingestion.
+
+Both variants guarantee O(δ) space usage regardless of how many data
+points are ingested, where δ is a user-chosen compression parameter
+(default 100).
+
+## Quick start
+
+```haskell
+import Data.Sketch.TDigest
+
+main :: IO ()
+main = do
+  let td = foldl' (flip add) empty [1.0 .. 100000.0]
+  print (quantile 0.99 td)   -- 99th percentile
+  print (quantile 0.999 td)  -- 99.9th percentile
+  print (cdf 50000.0 td)     -- fraction ≤ 50000
+```
+
+The mutable variant is useful for tight inner loops:
+
+```haskell
+import Data.Sketch.TDigest.Mutable
+import Control.Monad (forM_)
+
+result :: Maybe Double
+result = runTDigest $ do
+  td <- new
+  forM_ [1.0 .. 100000.0] $ \v -> add v td
+  quantile 0.99 td
+```
+
+## Why another t-digest on Hackage?
+
+The existing [`tdigest`](https://hackage.haskell.org/package/tdigest)
+package is a fine implementation.  This package differs in several ways
+that may or may not matter for your use case:
+
+| | `dunning-t-digest` | `tdigest` |
+|---|---|---|
+| **Internal structure** | Finger tree (pure) / mutable vectors (ST) | Balanced tree |
+| **Scale function** | K₁ arcsine | K₂ |
+| **Mutable variant** | Yes (`ST` monad) | No |
+| **Module namespace** | `Data.Sketch.*` | `Data.TDigest.*` |
+| **Monoidal measure** | Four-component (weight, count, maxMean, meanWeightSum) for O(1) chunk statistics | — |
+
+The choice of scale function affects the accuracy profile: K₁ provides
+tighter bounds at extreme quantiles (q < 0.01 or q > 0.99) at the cost
+of slightly looser bounds near the median, while K₂ distributes accuracy
+more uniformly.  See §3 of
+[Dunning & Ertl (2019)](https://arxiv.org/abs/1902.04023) for a
+detailed comparison.
+
+## How it works
+
+A t-digest maintains a sorted collection of *centroids* — (mean, weight)
+pairs that summarise clusters of nearby data points.  The key idea is
+that centroids near the tails of the distribution (q ≈ 0 or q ≈ 1) are
+kept small, while centroids in the interior may grow large.  This
+non-uniform resolution is governed by the *scale function*:
+
+$$k_1(q, \delta) = \frac{\delta}{2\pi} \arcsin(2q - 1)$$
+
+Two adjacent quantile positions q₀ and q₁ may share a centroid if and
+only if k₁(q₁) − k₁(q₀) ≤ 1.  Because the arcsine function has
+infinite slope at 0 and 1, this forces centroids at the extremes to
+carry very little weight, yielding high relative accuracy for tail
+queries.
+
+After each compression pass the digest holds at most O(δ) centroids.
+With the default δ = 100, this means roughly 100–300 centroids
+regardless of whether you have ingested ten thousand or ten billion data
+points.
+
+### The pure implementation
+
+The pure module stores centroids in a *finger tree* — a general-purpose
+sequence data structure due to
+[Hinze & Paterson (2006)](https://doi.org/10.1017/S0956796805005769) —
+annotated with a four-component monoidal measure that enables:
+
+- **Split-by-mean** for O(log n) insertion of new points at the correct
+  sorted position.
+- **Split-by-cumulative-weight** for O(log n) quantile queries.
+- **O(1) chunk mean** computation during compression, via the cached sum
+  of mean × weight products.
+- **O(1) centroid count and total weight** without traversal.
+
+Compression performs a single left-to-right greedy merge over the tree,
+yielding O(δ log n) amortised cost.
+
+### The mutable implementation
+
+The mutable module follows the *buffer-and-flush* strategy recommended
+by Dunning & Ertl (2019): incoming values are appended to an unsorted
+buffer in O(1) amortised time.  When the buffer reaches capacity (5δ),
+it is flushed into the sorted centroid array via insertion sort followed
+by a single-pass greedy merge.  Prefix sums are maintained for O(log n)
+binary-search queries.
+
+The `ST` monad provides true in-place mutation with rank-2 type safety —
+no mutable reference can escape the `runTDigest` block — while avoiding
+the overhead of persistent data structures.
+
+## Part of a larger project
+
+This package is one of 28 language implementations of the merging
+t-digest maintained in the
+[NadiaYvette/t-digest](https://github.com/NadiaYvette/t-digest)
+repository.  The full set spans Ada, C, C++, C#, Common Lisp, D, Elixir,
+Erlang, Fortran, Go, Haskell, Java, Julia, Kotlin, Lua, Mercury, Nim,
+OCaml, Perl, Prolog, Python, R, Ruby, Rust, Scheme, Standard ML, Swift,
+and Zig.  Twenty-two of the mutable implementations store centroids in
+array-backed 2-3-4 trees for cache-friendly O(log n) worst-case
+operations.
+
+## API overview
+
+### Pure (`Data.Sketch.TDigest`)
+
+| Function | Description |
+|---|---|
+| `empty`, `emptyWith` | Create a digest (default δ = 100) |
+| `add`, `addWeighted` | Insert a value |
+| `quantile` | Estimate value at quantile q ∈ [0, 1] |
+| `cdf` | Estimate CDF at a given value |
+| `compress` | Force a compression pass |
+| `merge` | Merge two digests |
+| `totalWeight`, `centroidCount` | Summary statistics |
+| `centroidList` | Extract centroids for serialisation |
+| `fromComponents` | Reconstruct from components |
+| `getDelta`, `getMin`, `getMax` | Accessors |
+
+### Mutable (`Data.Sketch.TDigest.Mutable`)
+
+| Function | Description |
+|---|---|
+| `new`, `newWith` | Create a mutable digest in `ST` |
+| `add`, `addWeighted` | Insert a value (O(1) amortised) |
+| `quantile`, `cdf` | Query (auto-compresses) |
+| `compress` | Force a flush-and-merge cycle |
+| `merge` | Merge a pure digest into a mutable one |
+| `freeze`, `thaw` | Convert between pure and mutable |
+| `runTDigest` | Run an `ST` computation to a pure result |
+
+## References
+
+- T. Dunning (2021). *The t-digest: Efficient estimates of
+  distributions.* Software Impacts **7**, 100049.
+  [doi:10.1016/j.simpa.2020.100049](https://doi.org/10.1016/j.simpa.2020.100049)
+
+- T. Dunning & O. Ertl (2019). *Computing extremely accurate quantiles
+  using t-digests.* arXiv:1902.04023.
+  [arxiv.org/abs/1902.04023](https://arxiv.org/abs/1902.04023)
+
+- M. Greenwald & S. Khanna (2001). *Space-efficient online computation
+  of quantile summaries.* SIGMOD '01.
+  [doi:10.1145/375663.375670](https://doi.org/10.1145/375663.375670)
+
+- J.I. Munro & M.S. Paterson (1980). *Selection and sorting with
+  limited storage.* Theoretical Computer Science **12**(3), 315–323.
+  [doi:10.1016/0304-3975(80)90061-4](https://doi.org/10.1016/0304-3975(80)90061-4)
+
+- R. Hinze & R. Paterson (2006). *Finger trees: A simple
+  general-purpose data structure.* Journal of Functional Programming
+  **16**(2), 197–217.
+  [doi:10.1017/S0956796805005769](https://doi.org/10.1017/S0956796805005769)
+
+## License
+
+BSD-3-Clause. Copyright (c) 2025 Nadia Yvette Chambers.
