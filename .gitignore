@@ -54,3 +54,7 @@ rust/target/
 *~
 *.swp
 .DS_Store
+
+# Workspace and autonomous workflow artifacts
+dist-newstyle/
+.yamaarashi/

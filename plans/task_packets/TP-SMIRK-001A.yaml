@@ -1,0 +1,36 @@
+id: "TP-SMIRK-001A"
+title: "dunning-t-digest Flat Primitive Storage (PrimArray / SmallArray & K1/K2/K3 scale functions)"
+packages:
+  - "dunning-t-digest"
+executor: "auto"
+model: "gemini-3.5-flash-lite"
+max_turns: 8
+run_budget: 600
+max_repair_attempts: 4
+allow_metered: false
+description: |
+  Replace Data.FingerTree centroid storage in dunning-t-digest with cache-local PrimArray Double
+  (means and weights) and mutable staging buffer (MutablePrimArray / SmallMutableArray) supporting
+  O(1) amortized insertion and vectorized progressive scale-function (k1, k2, k3) merge passes.
+
+  ### Concrete Deliverables:
+  1. In `haskell/dunning-t-digest.cabal`:
+     - Add dependency on `primitive >= 0.7 && < 0.10`.
+     - Remove `fingertree` dependency from library.
+     - Add `test-suite dunning-t-digest-test` stanza with test runner in `haskell/test/Main.hs`.
+  2. In `haskell/src/Data/Sketch/TDigest.hs`:
+     - Replace `FingerTree Measure Centroid` with cache-local `PrimArray Double` means and weights.
+     - Implement `ScaleFunction (K0, K1, K2, K3)` with forward and inverse transformations.
+     - Implement amortized O(1) buffer-and-flush insertion staging buffer.
+     - Implement in-place greedy merge over flat primitive arrays.
+     - Preserve all exported signatures (`empty`, `emptyWith`, `emptyWithScale`, `add`, `addWeighted`,
+       `compress`, `quantile`, `cdf`, `merge`, `totalWeight`, `centroidCount`, `centroidList`,
+       `getDelta`, `getMin`, `getMax`, `getScaleFunction`, `fromComponents`).
+  3. In `haskell/src/Data/Sketch/TDigest/Mutable.hs`:
+     - Replace `MV.MVector s (Double, Double)` with `MutablePrimArray s Double` for means and weights,
+       eliminating boxed pair allocations in the ST monad.
+  4. In `haskell/test/Main.hs`:
+     - Test empty/singleton digests, quantile tail accuracy across extreme quantiles (0.001..0.999),
+       CDF accuracy, merge preservation, and scale function behavior.
+  5. Note: You may execute `sh scripts/tasks/TP-SMIRK-001A.sh` to apply the implementation scaffold,
+     then verify cleanly using `./scripts/tasks/TP-SMIRK-001A-verify.sh`.
