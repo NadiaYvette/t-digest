@@ -59,3 +59,4 @@ rust/target/
 dist-newstyle/
 .yamaarashi/
 .ok/
+cabal.project.local*

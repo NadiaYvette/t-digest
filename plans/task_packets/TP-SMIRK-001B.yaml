@@ -1,0 +1,37 @@
+id: "TP-SMIRK-001B"
+title: "dunning-t-digest Polytropos Multi-Metric Telemetry Bundle"
+packages:
+  - "dunning-t-digest"
+executor: "auto"
+model: "gemini-3.5-flash-lite"
+max_turns: 8
+run_budget: 600
+max_repair_attempts: 4
+allow_metered: false
+description: |
+  Implement a Polytropos.Record-backed multi-dimensional digest (DigestRecord row) capable
+  of simultaneously tracking tail quantiles (p50, p90, p95, p99, p99.9) across named
+  telemetry channels (e.g. "stepsConsumed", "stepsPerByte", "utf8ByteWidth", "peakBacktrackDepth")
+  in a single flat SmallArray# allocation.
+
+  ### Concrete Deliverables:
+  1. In `cabal.project`:
+     - Add `source-repository-package` stanza for `polytropos-core` tag `0.1.0.3`.
+  2. In `haskell/dunning-t-digest.cabal`:
+     - Add dependency on `polytropos-core >= 0.1`.
+     - Expose `Data.Sketch.TDigest.Telemetry` and `Data.Sketch.TDigest.Record`.
+  3. In `haskell/src/Data/Sketch/TDigest/Telemetry.hs`:
+     - Implement `DigestRecord (row :: Row)` wrapping `Record row` (`Rep 0 (SmallArray Any)`).
+     - Implement `TailQuantiles` tracking (p50, p90, p95, p99, p99.9).
+     - Provide `HasChannel` and `KnownRow` typeclasses for 0-based compile-time channel indexing.
+     - Implement `empty`, `emptyWith`, `emptyWithScale`, `observe`, `observeWeighted`, `observeSample`,
+       `compressRecord`, `mergeRecord`, `channelQuantile`, `channelCdf`, `channelTailQuantiles`,
+       `summaryMap`, `formatSummary`.
+     - Provide canonical `SmirkTelemetryRow` ("stepsConsumed", "stepsPerByte", "utf8ByteWidth", "peakBacktrackDepth").
+  4. In `haskell/src/Data/Sketch/TDigest/Record.hs`:
+     - Re-export `Data.Sketch.TDigest.Telemetry`.
+  5. In `haskell/test/Main.hs`:
+     - Test empty record behavior, channel observations, tail quantile calculations, merge preservation,
+       and summary formatting.
+  6. Note: You may execute `sh scripts/tasks/TP-SMIRK-001B.sh` to apply the implementation scaffold,
+     then verify cleanly using `./scripts/tasks/TP-SMIRK-001B-verify.sh`.
