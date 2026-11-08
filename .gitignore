@@ -58,3 +58,4 @@ rust/target/
 # Workspace and autonomous workflow artifacts
 dist-newstyle/
 .yamaarashi/
+.ok/
