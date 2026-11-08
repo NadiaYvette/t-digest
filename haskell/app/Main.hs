@@ -1,112 +1,54 @@
 module Main (main) where
 
-import Data.List (foldl')
-import Data.Sketch.TDigest
-
--- ---------------------------------------------------------------------------
--- Formatting helpers
--- ---------------------------------------------------------------------------
-
-showFFloat6 :: Double -> String
-showFFloat6 = showFFloatN 6
-
-showFFloat3 :: Double -> String
-showFFloat3 = showFFloatN 3
-
-showFFloatN :: Int -> Double -> String
-showFFloatN n x
-  | isInfinite x = if x > 0 then "Inf" else "-Inf"
-  | isNaN x = "NaN"
-  | x < 0 = "-" ++ showFFloatN n (negate x)
-  | otherwise =
-      let factor = 10 ^ n :: Integer
-          scaled = round (x * fromIntegral factor) :: Integer
-          wholePart = scaled `div` factor
-          fracPart = scaled `mod` factor
-          fracStr = padLeftZ n (show fracPart)
-       in show wholePart ++ "." ++ fracStr
-
-padLeftZ :: Int -> String -> String
-padLeftZ n s
-  | length s >= n = s
-  | otherwise = replicate (n - length s) '0' ++ s
-
-padRight :: Int -> String -> String
-padRight n s
-  | length s >= n = s
-  | otherwise = s ++ replicate (n - length s) ' '
-
--- ---------------------------------------------------------------------------
--- Demo / self-test
--- ---------------------------------------------------------------------------
+import qualified Data.Sketch.TDigest as TD
+import Text.Printf (printf)
 
 main :: IO ()
 main = do
-  let numValues = 10000 :: Int
-      values = [fromIntegral i / fromIntegral numValues | i <- [0 .. numValues - 1]]
-      td = foldl' (flip add) empty values
+  let n = 10000 :: Int
+      td = foldl (flip TD.add) TD.empty [fromIntegral i / fromIntegral n | i <- [0 .. n - 1]]
 
-  putStrLn $ "T-Digest demo: " ++ show numValues ++ " uniform values in [0, 1)"
-  putStrLn $ "Centroids: " ++ show (centroidCount td)
+  putStrLn $ "T-Digest demo: " ++ show n ++ " uniform values in [0, 1)"
+  putStrLn $ "Centroids: " ++ show (TD.centroidCount td)
   putStrLn ""
-
   putStrLn "Quantile estimates (expected ~ q for uniform):"
-  let qs = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999] :: [Double]
+  let quantiles = [0.001, 0.010, 0.100, 0.250, 0.500, 0.750, 0.900, 0.990, 0.999]
   mapM_
     ( \q -> do
-        let Just est = quantile q td
+        let est = case TD.quantile q td of
+              Just v -> v
+              Nothing -> 0.0
             err = abs (est - q)
-        putStrLn $
-          "  q="
-            ++ padRight 6 (showFFloat3 q)
-            ++ "  estimated="
-            ++ showFFloat6 est
-            ++ "  error="
-            ++ showFFloat6 err
+        printf "  q=%-7.3f estimated=%-10.6f error=%.6f\n" q est err
     )
-    qs
+    quantiles
 
   putStrLn ""
-
   putStrLn "CDF estimates (expected ~ x for uniform):"
-  let xs = [0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999] :: [Double]
+  let cdfPoints = [0.001, 0.010, 0.100, 0.250, 0.500, 0.750, 0.900, 0.990, 0.999]
   mapM_
     ( \x -> do
-        let Just est = cdf x td
+        let est = case TD.cdf x td of
+              Just v -> v
+              Nothing -> 0.0
             err = abs (est - x)
-        putStrLn $
-          "  x="
-            ++ padRight 6 (showFFloat3 x)
-            ++ "  estimated="
-            ++ showFFloat6 est
-            ++ "  error="
-            ++ showFFloat6 err
+        printf "  x=%-7.3f estimated=%-10.6f error=%.6f\n" x est err
     )
-    xs
+    cdfPoints
 
   putStrLn ""
-
-  let vals1 = [fromIntegral i / fromIntegral numValues | i <- [0 .. 4999 :: Int]]
-      vals2 = [fromIntegral i / fromIntegral numValues | i <- [5000 .. 9999 :: Int]]
-      td1 = foldl' (flip add) empty vals1
-      td2 = foldl' (flip add) empty vals2
-      tdM = merge td1 td2
-
   putStrLn "After merge of two 5000-element digests:"
-  case quantile 0.5 tdM of
-    Just m -> putStrLn $ "  median=" ++ showFFloat6 m ++ " (expected ~0.5)"
-    Nothing -> putStrLn "  median=N/A"
-  case quantile 0.99 tdM of
-    Just p -> putStrLn $ "  p99   =" ++ showFFloat6 p ++ " (expected ~0.99)"
-    Nothing -> putStrLn "  p99   =N/A"
-  putStrLn $ "  centroids=" ++ show (centroidCount tdM)
-
-  putStrLn ""
-  putStrLn $
-    "Merge total weight: "
-      ++ show (totalWeight tdM)
-      ++ " (expected "
-      ++ show (totalWeight td1 + totalWeight td2)
-      ++ ")"
-  putStrLn ""
-  putStrLn "Done."
+  let td1 = foldl (flip TD.add) TD.empty [fromIntegral i / fromIntegral n | i <- [0 .. 4999 :: Int]]
+      td2 = foldl (flip TD.add) TD.empty [fromIntegral i / fromIntegral n | i <- [5000 .. 9999 :: Int]]
+      tdMerged = TD.merge td1 td2
+      med = case TD.quantile 0.5 tdMerged of
+        Just v -> v
+        Nothing -> 0.0
+      p99 = case TD.quantile 0.99 tdMerged of
+        Just v -> v
+        Nothing -> 0.0
+  printf "  median=%.6f (expected ~0.5)\n" med
+  printf "  p99   =%.6f (expected ~0.99)\n" p99
+  printf "  centroids=%d\n" (TD.centroidCount tdMerged)
+  printf "\nMerge total weight: %.1f (expected %.1f)\n" (TD.totalWeight tdMerged) (10000.0 :: Double)
+  putStrLn "\nDone."

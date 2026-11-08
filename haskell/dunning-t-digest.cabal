@@ -4,22 +4,14 @@ version:         0.1.0.1
 synopsis:        Dunning t-digest for online quantile estimation
 description:
   A pure functional implementation of the Dunning t-digest data structure
-  (merging digest variant, K1 arcsine scale function) using finger trees
-  with four-component monoidal measures for O(log n) insertion and queries.
+  (merging digest variant, K1 arcsine scale function) using flat primitive
+  arrays (PrimArray Double) for cache-local O(log n) queries and amortized
+  O(1) insertion via buffer-and-flush.
   .
-  Also provides a mutable variant backed by mutable vectors in the ST monad.
+  Also provides a mutable variant backed by MutablePrimArray in the ST monad.
   .
   The t-digest provides streaming, mergeable, memory-bounded approximation
   of quantile (percentile) queries with high accuracy in the tails.
-  .
-  Features:
-  .
-  * O(log n) insertion via split-by-mean (no buffering needed)
-  * O(log n) quantile queries via split-by-cumulative-weight
-  * O(log n) CDF queries via split-by-mean
-  * O(δ log n) compression via split-based greedy merge
-  * O(1) total weight, centroid count, and chunk mean computation
-  * Mutable variant with O(1) amortized insertion via buffering
 
 license:         BSD-3-Clause
 license-file:    LICENSE
@@ -39,23 +31,27 @@ source-repository head
   subdir:   haskell
 
 common warnings
-  ghc-options: -Wall
+  ghc-options: -Wall -Wcompat
 
 library
   import:           warnings
   exposed-modules:
     Data.Sketch.TDigest
     Data.Sketch.TDigest.Mutable
+    Data.Sketch.TDigest.Tree234
 
   build-depends:
     , base         >= 4.16 && < 5
-    , fingertree   >= 0.1  && < 0.2
+    , primitive    >= 0.7  && < 0.10
     , vector       >= 0.12 && < 0.14
 
   hs-source-dirs:   src
   default-extensions:
+    BangPatterns
+    DeriveGeneric
     MultiParamTypeClasses
     RankNTypes
+    ScopedTypeVariables
   default-language:   Haskell2010
 
 executable dunning-t-digest-demo
@@ -76,4 +72,15 @@ executable dunning-t-digest-bench
     , dunning-t-digest
 
   hs-source-dirs:   benchmarks
+  default-language: Haskell2010
+
+test-suite dunning-t-digest-test
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  build-depends:
+    , base              >= 4.16 && < 5
+    , dunning-t-digest
+    , primitive         >= 0.7  && < 0.10
+  hs-source-dirs:   test
   default-language: Haskell2010
