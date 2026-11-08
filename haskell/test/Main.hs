@@ -6,13 +6,14 @@ import Control.Monad (forM_)
 import Data.Maybe (isNothing)
 import qualified Data.Sketch.TDigest as TD
 import qualified Data.Sketch.TDigest.Mutable as TDM
+import qualified Data.Sketch.TDigest.Telemetry as Telemetry
 import qualified Data.Sketch.TDigest.Tree234 as Tree234
 import System.Exit (exitFailure, exitSuccess)
 import Text.Printf (printf)
 
 main :: IO ()
 main = do
-  putStrLn "=== [dunning-t-digest Flat PrimArray Test Suite] ==="
+  putStrLn "=== [dunning-t-digest Flat PrimArray & Telemetry Test Suite] ==="
   let tests =
         [ ("testEmptyDigest", testEmptyDigest),
           ("testSingletonDigest", testSingletonDigest),
@@ -22,7 +23,12 @@ main = do
           ("testMergePreservation", testMergePreservation),
           ("testScaleFunctions", testScaleFunctions),
           ("testMutableParity", testMutableParity),
-          ("testTree234ArrayHosted", testTree234ArrayHosted)
+          ("testTree234ArrayHosted", testTree234ArrayHosted),
+          ("testTelemetryEmptyRecord", testTelemetryEmptyRecord),
+          ("testTelemetryObservations", testTelemetryObservations),
+          ("testTelemetryTailQuantiles", testTelemetryTailQuantiles),
+          ("testTelemetryMergePreservation", testTelemetryMergePreservation),
+          ("testTelemetryFormatSummary", testTelemetryFormatSummary)
         ]
   results <- mapM runTest tests
   if and results
@@ -139,3 +145,71 @@ testTree234ArrayHosted = do
       && Tree234.tmWeight m == 100.0
       && Tree234.wrFound wRes
       && abs (Tree234.wrMean wRes - 50.0) <= 2.0
+
+testTelemetryEmptyRecord :: IO Bool
+testTelemetryEmptyRecord = do
+  let dr = Telemetry.emptySmirkTelemetry
+  pure $
+    Telemetry.channelTotalWeight Telemetry.stepsConsumed dr == 0.0
+      && Telemetry.channelTotalWeight Telemetry.stepsPerByte dr == 0.0
+      && Telemetry.channelTotalWeight Telemetry.utf8ByteWidth dr == 0.0
+      && Telemetry.channelTotalWeight Telemetry.peakBacktrackDepth dr == 0.0
+      && isNothing (Telemetry.channelQuantile Telemetry.stepsConsumed 0.5 dr)
+      && isNothing (Telemetry.channelTailQuantiles Telemetry.stepsConsumed dr)
+
+testTelemetryObservations :: IO Bool
+testTelemetryObservations = do
+  let dr0 = Telemetry.emptySmirkTelemetry
+      dr1 = Telemetry.observe Telemetry.stepsConsumed 120.0 dr0
+      dr2 = Telemetry.observe Telemetry.stepsPerByte 1.5 dr1
+      dr3 = Telemetry.observe Telemetry.utf8ByteWidth 4.0 dr2
+      dr4 = Telemetry.observe Telemetry.peakBacktrackDepth 8.0 dr3
+  pure $
+    Telemetry.channelTotalWeight Telemetry.stepsConsumed dr4 == 1.0
+      && Telemetry.channelTotalWeight Telemetry.stepsPerByte dr4 == 1.0
+      && Telemetry.channelTotalWeight Telemetry.utf8ByteWidth dr4 == 1.0
+      && Telemetry.channelTotalWeight Telemetry.peakBacktrackDepth dr4 == 1.0
+      && Telemetry.channelQuantile Telemetry.stepsConsumed 0.5 dr4 == Just 120.0
+      && Telemetry.channelQuantile Telemetry.stepsPerByte 0.5 dr4 == Just 1.5
+      && Telemetry.channelQuantile Telemetry.utf8ByteWidth 0.5 dr4 == Just 4.0
+      && Telemetry.channelQuantile Telemetry.peakBacktrackDepth 0.5 dr4 == Just 8.0
+
+testTelemetryTailQuantiles :: IO Bool
+testTelemetryTailQuantiles = do
+  let n = 10000 :: Int
+      vals = [1.0 .. fromIntegral n]
+      dr = foldl (\acc x -> Telemetry.observe Telemetry.stepsConsumed x acc) Telemetry.emptySmirkTelemetry vals
+  case Telemetry.channelTailQuantiles Telemetry.stepsConsumed dr of
+    Nothing -> pure False
+    Just tq ->
+      pure $
+        abs (Telemetry.p50 tq - 5000.0) < 50.0
+          && abs (Telemetry.p90 tq - 9000.0) < 50.0
+          && abs (Telemetry.p95 tq - 9500.0) < 50.0
+          && abs (Telemetry.p99 tq - 9900.0) < 50.0
+          && abs (Telemetry.p999 tq - 9990.0) < 50.0
+
+testTelemetryMergePreservation :: IO Bool
+testTelemetryMergePreservation = do
+  let n = 5000 :: Int
+      dr1 = foldl (\acc i -> Telemetry.observe Telemetry.stepsConsumed i acc) Telemetry.emptySmirkTelemetry [1 .. fromIntegral n]
+      dr2 = foldl (\acc i -> Telemetry.observe Telemetry.stepsConsumed i acc) Telemetry.emptySmirkTelemetry [fromIntegral n + 1 .. 2 * fromIntegral n]
+      drMerged = Telemetry.mergeRecord dr1 dr2
+      w = Telemetry.channelTotalWeight Telemetry.stepsConsumed drMerged
+      med = Telemetry.channelQuantile Telemetry.stepsConsumed 0.5 drMerged
+  pure $
+    w == fromIntegral (2 * n)
+      && case med of
+        Just m -> abs (m - fromIntegral n) < 50.0
+        Nothing -> False
+
+testTelemetryFormatSummary :: IO Bool
+testTelemetryFormatSummary = do
+  let dr0 = Telemetry.emptySmirkTelemetry
+      dr1 = Telemetry.observeSample [("stepsConsumed", 50.0), ("stepsPerByte", 2.0), ("utf8ByteWidth", 1.0), ("peakBacktrackDepth", 4.0)] dr0
+      sMap = Telemetry.summaryMap dr1
+      formatted = Telemetry.formatSummary dr1
+  pure $
+    length sMap == 4
+      && not (null formatted)
+      && length (lines formatted) >= 6

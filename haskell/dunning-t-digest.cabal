@@ -39,11 +39,14 @@ library
     Data.Sketch.TDigest
     Data.Sketch.TDigest.Mutable
     Data.Sketch.TDigest.Tree234
+    Data.Sketch.TDigest.Telemetry
+    Data.Sketch.TDigest.Record
 
   build-depends:
-    , base         >= 4.16 && < 5
-    , primitive    >= 0.7  && < 0.10
-    , vector       >= 0.12 && < 0.14
+    , base            >= 4.16 && < 5
+    , polytropos-core >= 0.1
+    , primitive       >= 0.7  && < 0.10
+    , vector          >= 0.12 && < 0.14
 
   hs-source-dirs:   src
   default-extensions:
@@ -81,6 +84,7 @@ test-suite dunning-t-digest-test
   build-depends:
     , base              >= 4.16 && < 5
     , dunning-t-digest
+    , polytropos-core   >= 0.1
     , primitive         >= 0.7  && < 0.10
   hs-source-dirs:   test
   default-language: Haskell2010
